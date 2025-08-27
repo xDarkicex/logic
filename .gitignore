@@ -2,3 +2,4 @@
 .gitingestignore
 go.sum
 master.txt
+.DS_Store
