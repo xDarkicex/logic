@@ -240,6 +240,9 @@ func TestGates(t *testing.T) {
 		{NotGate{}, []bool{false}, true},
 		{XorGate{}, []bool{true, false}, true},
 		{XorGate{}, []bool{true, true}, false},
+		{XnorGate{}, []bool{true, false}, false},
+		{XnorGate{}, []bool{true, true}, true},
+		{XnorGate{}, []bool{false, false}, true},
 		{NandGate{}, []bool{true, true}, false},
 		{NandGate{}, []bool{true, false}, true},
 	}
@@ -252,6 +255,232 @@ func TestGates(t *testing.T) {
 					test.gate.String(), test.inputs, test.expected, result)
 			}
 		})
+	}
+}
+
+// =======================
+// ENHANCED CIRCUIT TESTS
+// =======================
+func TestEnhancedCircuit(t *testing.T) {
+	// Create a simple AND-OR circuit: (A AND B) OR (C AND D)
+	circuit := NewCircuit([]string{"A", "B", "C", "D"})
+
+	// Add nodes
+	err := circuit.AddNode("and1", AndGate{}, []string{"A", "B"})
+	if err != nil {
+		t.Fatalf("Failed to add and1: %v", err)
+	}
+
+	err = circuit.AddNode("and2", AndGate{}, []string{"C", "D"})
+	if err != nil {
+		t.Fatalf("Failed to add and2: %v", err)
+	}
+
+	err = circuit.AddNode("or1", OrGate{}, []string{"and1", "and2"})
+	if err != nil {
+		t.Fatalf("Failed to add or1: %v", err)
+	}
+
+	// Set output
+	err = circuit.SetOutputs([]string{"or1"})
+	if err != nil {
+		t.Fatalf("Failed to set outputs: %v", err)
+	}
+
+	// Test cases
+	testCases := []struct {
+		name     string
+		inputs   map[string]bool
+		expected bool
+	}{
+		{"All false", map[string]bool{"A": false, "B": false, "C": false, "D": false}, false},
+		{"A,B true", map[string]bool{"A": true, "B": true, "C": false, "D": false}, true},
+		{"C,D true", map[string]bool{"A": false, "B": false, "C": true, "D": true}, true},
+		{"All true", map[string]bool{"A": true, "B": true, "C": true, "D": true}, true},
+		{"Mixed", map[string]bool{"A": true, "B": false, "C": false, "D": true}, false},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			outputs, err := circuit.Simulate(tc.inputs)
+			if err != nil {
+				t.Fatalf("Simulation failed: %v", err)
+			}
+
+			result := outputs["or1"]
+			if result != tc.expected {
+				t.Errorf("Expected %v, got %v", tc.expected, result)
+			}
+		})
+	}
+}
+
+func TestCircuitMultipleOutputs(t *testing.T) {
+	// Create circuit with multiple outputs
+	circuit := NewCircuit([]string{"A", "B"})
+
+	circuit.AddNode("and1", AndGate{}, []string{"A", "B"})
+	circuit.AddNode("or1", OrGate{}, []string{"A", "B"})
+	circuit.AddNode("xor1", XorGate{}, []string{"A", "B"})
+	circuit.AddNode("not1", NotGate{}, []string{"A"})
+
+	circuit.SetOutputs([]string{"and1", "or1", "xor1", "not1"})
+
+	inputs := map[string]bool{"A": true, "B": false}
+	outputs, err := circuit.Simulate(inputs)
+	if err != nil {
+		t.Fatalf("Simulation failed: %v", err)
+	}
+
+	expected := map[string]bool{
+		"and1": false, // true AND false
+		"or1":  true,  // true OR false
+		"xor1": true,  // true XOR false
+		"not1": false, // NOT true
+	}
+
+	for nodeID, expectedValue := range expected {
+		if outputs[nodeID] != expectedValue {
+			t.Errorf("Node %s: expected %v, got %v", nodeID, expectedValue, outputs[nodeID])
+		}
+	}
+}
+
+func TestCircuitErrorHandling(t *testing.T) {
+	circuit := NewCircuit([]string{"A", "B"})
+
+	// Test duplicate node ID
+	circuit.AddNode("gate1", AndGate{}, []string{"A", "B"})
+	err := circuit.AddNode("gate1", OrGate{}, []string{"A", "B"})
+	if err == nil {
+		t.Error("Expected error for duplicate node ID")
+	}
+
+	// Test invalid output reference
+	err = circuit.SetOutputs([]string{"nonexistent"})
+	if err == nil {
+		t.Error("Expected error for nonexistent output node")
+	}
+
+	// Test missing input
+	circuit.SetOutputs([]string{"gate1"})
+	_, err = circuit.Simulate(map[string]bool{"A": true}) // Missing B
+	if err == nil {
+		t.Error("Expected error for missing input")
+	}
+}
+
+func TestCircuitCyclicDependency(t *testing.T) {
+	circuit := NewCircuit([]string{"A"})
+
+	// Create a cycle: gate1 -> gate2 -> gate1
+	circuit.AddNode("gate1", AndGate{}, []string{"A", "gate2"})
+	circuit.AddNode("gate2", OrGate{}, []string{"gate1", "A"})
+	circuit.SetOutputs([]string{"gate1"})
+
+	// This should detect the cycle
+	_, err := circuit.Simulate(map[string]bool{"A": true})
+	if err == nil {
+		t.Error("Expected error for cyclic dependency")
+	}
+}
+
+func TestCircuitComplexTopology(t *testing.T) {
+	// Test a more complex circuit with deeper dependencies
+	circuit := NewCircuit([]string{"A", "B", "C", "D"})
+
+	// Layer 1
+	circuit.AddNode("gate1", AndGate{}, []string{"A", "B"})
+	circuit.AddNode("gate2", OrGate{}, []string{"C", "D"})
+
+	// Layer 2
+	circuit.AddNode("gate3", XorGate{}, []string{"gate1", "gate2"})
+	circuit.AddNode("gate4", NandGate{}, []string{"A", "C"})
+
+	// Layer 3
+	circuit.AddNode("final", OrGate{}, []string{"gate3", "gate4"})
+
+	circuit.SetOutputs([]string{"final"})
+
+	inputs := map[string]bool{"A": true, "B": false, "C": true, "D": false}
+	outputs, err := circuit.Simulate(inputs)
+	if err != nil {
+		t.Fatalf("Complex circuit simulation failed: %v", err)
+	}
+
+	// Verify intermediate values
+	gate1Val, _ := circuit.GetNodeValue("gate1") // true AND false = false
+	gate2Val, _ := circuit.GetNodeValue("gate2") // true OR false = true
+	gate3Val, _ := circuit.GetNodeValue("gate3") // false XOR true = true
+	gate4Val, _ := circuit.GetNodeValue("gate4") // NOT(true AND true) = false
+
+	if gate1Val != false {
+		t.Errorf("gate1: expected false, got %v", gate1Val)
+	}
+	if gate2Val != true {
+		t.Errorf("gate2: expected true, got %v", gate2Val)
+	}
+	if gate3Val != true {
+		t.Errorf("gate3: expected true, got %v", gate3Val)
+	}
+	if gate4Val != false {
+		t.Errorf("gate4: expected false, got %v", gate4Val)
+	}
+
+	// Final output: true OR false = true
+	if outputs["final"] != true {
+		t.Errorf("final: expected true, got %v", outputs["final"])
+	}
+}
+
+func TestXnorGate(t *testing.T) {
+	gate := XnorGate{}
+
+	tests := []struct {
+		inputs   []bool
+		expected bool
+	}{
+		{[]bool{false, false}, true},
+		{[]bool{false, true}, false},
+		{[]bool{true, false}, false},
+		{[]bool{true, true}, true},
+		{[]bool{true, true, true}, false},        // Odd number of trues
+		{[]bool{true, true, false, false}, true}, // Even number of trues
+	}
+
+	for _, test := range tests {
+		result := gate.Evaluate(test.inputs...)
+		if result != test.expected {
+			t.Errorf("XNOR(%v): expected %v, got %v", test.inputs, test.expected, result)
+		}
+	}
+}
+
+func TestContingency(t *testing.T) {
+	variables := []string{"A", "B"}
+
+	// A AND B should be contingent
+	andFn := func(inputs ...bool) bool {
+		return And(inputs[0], inputs[1])
+	}
+	if !Contingency(variables, andFn) {
+		t.Error("A AND B should be contingent")
+	}
+
+	// A OR NOT A should be a tautology (not contingent)
+	tautologyFn := func(inputs ...bool) bool {
+		return Or(inputs[0], Not(inputs[0]))
+	}
+	if Contingency([]string{"A"}, tautologyFn) {
+		t.Error("A OR NOT A should not be contingent (it's a tautology)")
+	}
+
+	// A AND NOT A should be a contradiction (not contingent)
+	contradictionFn := func(inputs ...bool) bool {
+		return And(inputs[0], Not(inputs[0]))
+	}
+	if Contingency([]string{"A"}, contradictionFn) {
+		t.Error("A AND NOT A should not be contingent (it's a contradiction)")
 	}
 }
 
@@ -344,5 +573,24 @@ func BenchmarkTruthTableGeneration(b *testing.B) {
 	}
 	for i := 0; i < b.N; i++ {
 		GenerateTruthTable(variables, fn)
+	}
+}
+
+func BenchmarkCircuitSimulation(b *testing.B) {
+	// Benchmark circuit simulation
+	circuit := NewCircuit([]string{"A", "B", "C", "D"})
+
+	circuit.AddNode("and1", AndGate{}, []string{"A", "B"})
+	circuit.AddNode("and2", AndGate{}, []string{"C", "D"})
+	circuit.AddNode("or1", OrGate{}, []string{"and1", "and2"})
+	circuit.AddNode("not1", NotGate{}, []string{"or1"})
+
+	circuit.SetOutputs([]string{"not1"})
+
+	inputs := map[string]bool{"A": true, "B": false, "C": true, "D": true}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		circuit.Simulate(inputs)
 	}
 }

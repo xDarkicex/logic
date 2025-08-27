@@ -403,3 +403,18 @@ func Contradiction(variables []string, fn func(...bool) bool) bool {
 	}
 	return true
 }
+
+// Contingency checks if a logical expression is contingent (sometimes true, sometimes false)
+// for the given input combinations. A contingent expression is neither a tautology nor a contradiction.
+//
+// Example:
+//
+//	// Check if A AND B is contingent
+//	variables := []string{"A", "B"}
+//	fn := func(inputs ...bool) bool {
+//		return And(inputs[0], inputs[1])
+//	}
+//	isContingent := Contingency(variables, fn) // true
+func Contingency(variables []string, fn func(...bool) bool) bool {
+	return !Tautology(variables, fn) && !Contradiction(variables, fn)
+}

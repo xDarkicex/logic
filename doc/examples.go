@@ -165,6 +165,12 @@ func ExampleLogicalLaws() {
 	fmt.Printf("A && !A is a contradiction: %v\n",
 		logic.Contradiction([]string{"A"}, contradiction))
 
+	// Test contingency detection
+	contingent := func(inputs ...bool) bool {
+		return logic.And(inputs[0], inputs[1]) // A AND B
+	}
+	fmt.Printf("A AND B is contingent: %v\n", logic.Contingency(variables, contingent))
+
 	fmt.Println()
 }
 
@@ -195,38 +201,151 @@ func ExampleFluentInterface() {
 	fmt.Println()
 }
 
-// ExampleGatesAndCircuits demonstrates logic gates and circuits.
-// Shows how to use individual gates and simple circuit simulation.
+// ExampleGatesAndCircuits demonstrates logic gates and enhanced circuits.
+// Shows how to use individual gates and create complex interconnected circuits.
 func ExampleGatesAndCircuits() {
-	fmt.Println("=== Logic Gates and Circuits ===")
+	fmt.Println("=== Logic Gates and Enhanced Circuits ===")
 
-	// Test individual gates
+	// Test individual gates including XNOR
 	andGate := logic.AndGate{}
 	orGate := logic.OrGate{}
 	notGate := logic.NotGate{}
 	xorGate := logic.XorGate{}
+	xnorGate := logic.XnorGate{}
 	nandGate := logic.NandGate{}
 
 	fmt.Printf("AND(true, false): %v\n", andGate.Evaluate(true, false))
 	fmt.Printf("OR(true, false): %v\n", orGate.Evaluate(true, false))
 	fmt.Printf("NOT(true): %v\n", notGate.Evaluate(true))
 	fmt.Printf("XOR(true, false): %v\n", xorGate.Evaluate(true, false))
+	fmt.Printf("XNOR(true, false): %v\n", xnorGate.Evaluate(true, false))
 	fmt.Printf("NAND(true, true): %v\n", nandGate.Evaluate(true, true))
 
-	// Create a simple circuit
-	circuit := logic.NewCircuit([]string{"A", "B"})
-	circuit.AddGate(andGate)
-	circuit.AddGate(orGate)
+	// Create a more complex circuit: Full Adder
+	// Inputs: A, B, Cin (carry in)
+	// Outputs: Sum, Cout (carry out)
+	// Sum = A XOR B XOR Cin
+	// Cout = (A AND B) OR (Cin AND (A XOR B))
 
-	inputs := map[string]bool{"A": true, "B": false}
-	result, err := circuit.Simulate(inputs)
-	if err != nil {
-		fmt.Printf("Circuit simulation error: %v\n", err)
-	} else {
-		fmt.Printf("Circuit result: %v\n", result)
+	circuit := logic.NewCircuit([]string{"A", "B", "Cin"})
+
+	// Build the circuit
+	circuit.AddNode("xor1", logic.XorGate{}, []string{"A", "B"})
+	circuit.AddNode("sum", logic.XorGate{}, []string{"xor1", "Cin"})
+	circuit.AddNode("and1", logic.AndGate{}, []string{"A", "B"})
+	circuit.AddNode("and2", logic.AndGate{}, []string{"xor1", "Cin"})
+	circuit.AddNode("cout", logic.OrGate{}, []string{"and1", "and2"})
+
+	// Set outputs
+	circuit.SetOutputs([]string{"sum", "cout"})
+
+	fmt.Println("\nFull Adder Truth Table:")
+	fmt.Println("A B Cin | Sum Cout")
+	fmt.Println("--------|----------")
+
+	// Test all input combinations
+	for a := 0; a <= 1; a++ {
+		for b := 0; b <= 1; b++ {
+			for cin := 0; cin <= 1; cin++ {
+				inputs := map[string]bool{
+					"A":   a == 1,
+					"B":   b == 1,
+					"Cin": cin == 1,
+				}
+
+				outputs, err := circuit.Simulate(inputs)
+				if err != nil {
+					fmt.Printf("Circuit simulation error: %v\n", err)
+					continue
+				}
+
+				sum := 0
+				if outputs["sum"] {
+					sum = 1
+				}
+				cout := 0
+				if outputs["cout"] {
+					cout = 1
+				}
+
+				fmt.Printf("%d %d %d   | %d   %d\n", a, b, cin, sum, cout)
+			}
+		}
 	}
 
 	fmt.Println()
+}
+
+// ExampleComplexCircuit demonstrates a more complex circuit with multiple layers.
+func ExampleComplexCircuit() {
+	fmt.Println("=== Complex Multi-Layer Circuit ===")
+
+	// Create a 2-bit comparator circuit
+	// Inputs: A1, A0, B1, B0 (two 2-bit numbers)
+	// Outputs: GT (A > B), EQ (A == B), LT (A < B)
+
+	circuit := logic.NewCircuit([]string{"A1", "A0", "B1", "B0"})
+
+	// Layer 1: Bit comparisons
+	circuit.AddNode("eq1", logic.XnorGate{}, []string{"A1", "B1"}) // A1 == B1
+	circuit.AddNode("eq0", logic.XnorGate{}, []string{"A0", "B0"}) // A0 == B0
+	circuit.AddNode("gt1", logic.AndGate{}, []string{"A1", "B1"})  // A1 > B1 (simplified)
+	circuit.AddNode("gt0", logic.AndGate{}, []string{"A0", "B0"})  // A0 > B0 (simplified)
+
+	// Layer 2: Combined comparisons
+	circuit.AddNode("eq", logic.AndGate{}, []string{"eq1", "eq0"})        // A == B
+	circuit.AddNode("gt_partial", logic.OrGate{}, []string{"gt1", "gt0"}) // Partial GT logic
+	circuit.AddNode("not_eq", logic.NotGate{}, []string{"eq"})
+
+	// Layer 3: Final outputs
+	circuit.AddNode("gt", logic.AndGate{}, []string{"gt_partial", "not_eq"}) // A > B
+	circuit.AddNode("lt", logic.NorGate{}, []string{"gt", "eq"})             // A < B
+
+	circuit.SetOutputs([]string{"gt", "eq", "lt"})
+
+	fmt.Println("2-bit Comparator Examples:")
+	fmt.Println("A1 A0 | B1 B0 | GT EQ LT")
+	fmt.Println("------|------|----------")
+
+	testCases := []struct {
+		a1, a0, b1, b0 bool
+		name           string
+	}{
+		{false, false, false, false, "0 vs 0"},
+		{false, true, false, false, "1 vs 0"},
+		{true, false, false, true, "2 vs 1"},
+		{true, true, true, false, "3 vs 2"},
+		{false, true, true, true, "1 vs 3"},
+	}
+
+	for _, tc := range testCases {
+		inputs := map[string]bool{
+			"A1": tc.a1, "A0": tc.a0,
+			"B1": tc.b1, "B0": tc.b0,
+		}
+
+		outputs, err := circuit.Simulate(inputs)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			continue
+		}
+
+		a1, a0, b1, b0 := boolToInt(tc.a1), boolToInt(tc.a0), boolToInt(tc.b1), boolToInt(tc.b0)
+		gt, eq, lt := boolToInt(outputs["gt"]), boolToInt(outputs["eq"]), boolToInt(outputs["lt"])
+
+		fmt.Printf("%d  %d  | %d  %d  | %d  %d  %d   (%s)\n",
+			a1, a0, b1, b0, gt, eq, lt, tc.name)
+	}
+
+	fmt.Println()
+}
+
+// Helper function for examples
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // ExampleAdvancedBitwiseOperations demonstrates advanced bitwise operations.
@@ -284,6 +403,16 @@ func ExampleErrorHandling() {
 		}
 	}
 
+	// Circuit error example
+	circuit := logic.NewCircuit([]string{"A", "B"})
+	circuit.AddNode("gate1", logic.AndGate{}, []string{"A", "B"})
+
+	// Try to add duplicate node
+	err = circuit.AddNode("gate1", logic.OrGate{}, []string{"A", "B"})
+	if err != nil {
+		fmt.Printf("Circuit error: %v\n", err)
+	}
+
 	fmt.Println()
 }
 
@@ -300,6 +429,7 @@ func main() {
 	ExampleLogicalLaws()
 	ExampleFluentInterface()
 	ExampleGatesAndCircuits()
+	ExampleComplexCircuit()
 	ExampleAdvancedBitwiseOperations()
 	ExampleErrorHandling()
 
