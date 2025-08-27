@@ -47,7 +47,7 @@ A comprehensive Go library for logical operations, bitwise manipulation, truth t
 ## Installation
 
 ```bash
-go get github.com/yourusername/logic
+go get github.com/xDarkicex/logic
 ```
 
 ## Quick Start
@@ -57,7 +57,7 @@ package main
 
 import (
     "fmt"
-    "github.com/yourusername/logic"
+    "github.com/xDarkicex/logic"
 )
 
 func main() {
