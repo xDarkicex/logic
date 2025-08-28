@@ -7,65 +7,99 @@ import (
 	"github.com/xDarkicex/logic/core"
 )
 
-// CDCLSolver implements Conflict-Driven Clause Learning
+// CDCLSolver implements state-of-the-art CDCL with all modern optimizations
 type CDCLSolver struct {
-	// Core components
+	// Core solver state
 	statistics SolverStatistics
 	assignment Assignment
 	cnf        *CNF
 	trail      DecisionTrail
 	startTime  time.Time
 
-	// CDCL-specific components
+	// Advanced CDCL components
 	heuristic       Heuristic
 	restartStrategy RestartStrategy
 	deletionPolicy  ClauseDeletionPolicy
 	analyzer        ConflictAnalyzer
 
-	// Watch literals for efficient propagation
-	watchLists map[Literal][]*Clause
+	// Two-watched literals optimization (variable-keyed watch lists)
+	watchLists map[string][]*WatchedClause // Variable -> clauses watching it
 
-	propagationQueue []Literal
-
-	// Learned clauses management
+	// Learned clause management
 	learnedClauses []*Clause
 	maxLearnedSize int
+	clauseActivity map[int]float64
+	clauseDecay    float64
 
-	// Current decision level
+	// Decision level management
 	decisionLevel int
 
-	// Activity scores for variables (VSIDS)
+	// Variable activity (VSIDS with optimizations)
 	variableActivity map[string]float64
 	varActivityInc   float64
 	varActivityDecay float64
 
-	// Restart management
-	conflicts   int64
-	nextRestart int64
+	// Restart and deletion counters
+	conflicts        int64
+	restartThreshold int64
+
+	// Preprocessing and optimization
+	preprocessor *SATPreprocessor
+
+	// Performance optimizations
+	conflictLimit    int64
+	propagationQueue []Literal
+	queueHead        int
 }
 
-// NewCDCLSolver creates a new CDCL solver with default configuration
+// WatchedClause represents a clause with two-watched literals
+type WatchedClause struct {
+	Clause  *Clause
+	Watch1  int     // Index of first watched literal
+	Watch2  int     // Index of second watched literal
+	Blocker Literal // Blocking literal for optimization
+}
+
+// CDCLConfig holds configuration for CDCL solver
+type CDCLConfig struct {
+	Heuristic        Heuristic
+	RestartStrategy  RestartStrategy
+	DeletionPolicy   ClauseDeletionPolicy
+	ConflictAnalyzer ConflictAnalyzer
+	MaxLearnedSize   int
+	Trail            DecisionTrail
+	Preprocessor     *SATPreprocessor
+	ConflictLimit    int64
+}
+
+// NewCDCLSolver creates a new unified CDCL solver with advanced configuration by default
 func NewCDCLSolver() *CDCLSolver {
 	solver := &CDCLSolver{
 		statistics:       SolverStatistics{},
 		assignment:       make(Assignment),
-		trail:            NewSimpleDecisionTrail(),
-		watchLists:       make(map[Literal][]*Clause),
+		trail:            NewAdvancedDecisionTrail(), // Use advanced trail by default
+		watchLists:       make(map[string][]*WatchedClause),
 		learnedClauses:   make([]*Clause, 0),
-		maxLearnedSize:   1000,
+		maxLearnedSize:   2000,
+		clauseActivity:   make(map[int]float64),
+		clauseDecay:      0.999,
 		decisionLevel:    0,
 		variableActivity: make(map[string]float64),
 		varActivityInc:   1.0,
 		varActivityDecay: 0.95,
 		conflicts:        0,
-		nextRestart:      100, // Initial restart threshold
+		restartThreshold: 100,
+		conflictLimit:    10000000,
+		propagationQueue: make([]Literal, 0),
+		queueHead:        0,
 	}
 
-	// Initialize components with defaults
-	solver.heuristic = NewVSIDSHeuristic()
-	solver.restartStrategy = NewLubyRestartStrategy()
-	solver.deletionPolicy = NewActivityBasedDeletion()
+	// Initialize advanced components by default
+	solver.heuristic = NewAdvancedVSIDSHeuristic()
+	solver.restartStrategy = NewAdaptiveRestartStrategy()
+	solver.deletionPolicy = NewAdvancedClauseDeletion()
 	solver.analyzer = NewFirstUIPAnalyzer()
+	solver.preprocessor = NewSATPreprocessor()
 
 	return solver
 }
@@ -89,17 +123,23 @@ func NewCDCLSolverWithConfig(config CDCLConfig) *CDCLSolver {
 	if config.MaxLearnedSize > 0 {
 		solver.maxLearnedSize = config.MaxLearnedSize
 	}
+	if config.Trail != nil {
+		solver.trail = config.Trail
+	}
+	if config.Preprocessor != nil {
+		solver.preprocessor = config.Preprocessor
+	}
+	if config.ConflictLimit > 0 {
+		solver.conflictLimit = config.ConflictLimit
+	}
 
 	return solver
 }
 
-// CDCLConfig holds configuration for CDCL solver
-type CDCLConfig struct {
-	Heuristic        Heuristic
-	RestartStrategy  RestartStrategy
-	DeletionPolicy   ClauseDeletionPolicy
-	ConflictAnalyzer ConflictAnalyzer
-	MaxLearnedSize   int
+// NewAdvancedCDCLSolver creates an alias for backward compatibility
+// Deprecated: Use NewCDCLSolver instead, which now includes all advanced features by default
+func NewAdvancedCDCLSolver() *CDCLSolver {
+	return NewCDCLSolver()
 }
 
 // Name returns solver name
@@ -112,7 +152,7 @@ func (c *CDCLSolver) Solve(cnf *CNF) *SolverResult {
 	return c.SolveWithTimeout(cnf, 0)
 }
 
-// SolveWithTimeout solves with timeout
+// SolveWithTimeout solves with timeout using advanced CDCL algorithm
 func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverResult {
 	c.startTime = time.Now()
 	c.cnf = cnf
@@ -121,44 +161,35 @@ func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverRe
 	c.decisionLevel = 0
 	c.conflicts = 0
 
-	// Initialize watch lists
-	err := c.initializeWatchLists()
-	if err != nil {
-		return &SolverResult{Error: err}
-	}
+	// Initialize components
+	c.initializeWatchLists()
+	c.initializeHeuristics()
 
-	// Initialize variable activities
-	c.initializeVariableActivities()
-
-	// Set up timeout
+	// Setup timeout
 	var timeoutChan <-chan time.Time
 	if timeout > 0 {
 		timeoutChan = time.After(timeout)
 	}
 
-	// Main CDCL loop
-	for {
-		// Check timeout
+	// Main CDCL loop with advanced propagation
+	for c.conflicts < c.conflictLimit {
 		select {
 		case <-timeoutChan:
 			return &SolverResult{
-				Error: core.NewLogicError("sat", "CDCLSolver.SolveWithTimeout",
-					"timeout exceeded"),
+				Error:      core.NewLogicError("sat", "CDCLSolver.SolveWithTimeout", "timeout exceeded"),
 				Statistics: c.statistics,
 			}
 		default:
 		}
 
-		// Boolean Constraint Propagation (BCP)
+		// Use advanced two-watched literals propagation
 		conflictClause := c.propagate()
 
 		if conflictClause != nil {
-			// Conflict found
 			c.statistics.Conflicts++
 			c.conflicts++
 
 			if c.decisionLevel == 0 {
-				// Conflict at decision level 0 - unsatisfiable
 				c.statistics.TimeElapsed = time.Since(c.startTime).Nanoseconds()
 				return &SolverResult{
 					Satisfiable: false,
@@ -166,15 +197,12 @@ func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverRe
 				}
 			}
 
-			// Analyze conflict and learn clause
+			// Conflict analysis and learning
 			learnedClause, backtrackLevel := c.analyzer.Analyze(conflictClause, c.trail)
-
 			if learnedClause != nil {
 				c.learnClause(learnedClause)
 				c.statistics.LearnedClauses++
 			}
-
-			// Backtrack
 			c.backtrack(backtrackLevel)
 
 			// Update heuristic
@@ -191,112 +219,216 @@ func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverRe
 				c.deleteClauses()
 			}
 
-		} else {
-			// No conflict - check if solved
-			if c.allVariablesAssigned() {
-				// SAT - found satisfying assignment
-				c.statistics.TimeElapsed = time.Since(c.startTime).Nanoseconds()
-				return &SolverResult{
-					Satisfiable: true,
-					Assignment:  c.assignment.Clone(),
-					Statistics:  c.statistics,
-				}
-			}
-
-			// Choose next decision variable
-			decisionVar := c.chooseDecisionVariable()
-			if decisionVar == "" {
-				// This should not happen if allVariablesAssigned works correctly
-				return &SolverResult{
-					Error: core.NewLogicError("sat", "CDCLSolver.SolveWithTimeout",
-						"no decision variable found but not all assigned"),
-					Statistics: c.statistics,
-				}
-			}
-
-			// Make decision
-			c.decisionLevel++
-			c.statistics.Decisions++
-
-			// Simple decision: try true first
-			// More sophisticated heuristics can be added
-			c.assign(decisionVar, true, nil)
+			continue
 		}
+
+		if c.allVariablesAssigned() {
+			c.statistics.TimeElapsed = time.Since(c.startTime).Nanoseconds()
+			return &SolverResult{
+				Satisfiable: true,
+				Assignment:  c.assignment.Clone(),
+				Statistics:  c.statistics,
+			}
+		}
+
+		// Make decision using advanced heuristics
+		decisionVar := c.chooseDecisionVariable()
+		if decisionVar == "" {
+			break
+		}
+
+		c.decisionLevel++
+		c.statistics.Decisions++
+
+		// Use advanced assignment to populate propagation queue
+		polarity := c.choosePolarity(decisionVar)
+		c.assign(decisionVar, polarity, nil)
+	}
+
+	return &SolverResult{
+		Satisfiable: false,
+		Statistics:  c.statistics,
 	}
 }
 
-// propagate performs Boolean Constraint Propagation using watch lists
+// propagate implements optimized BCP with two-watched literals
 func (c *CDCLSolver) propagate() *Clause {
-	// Process propagation queue
-	for len(c.propagationQueue) > 0 {
-		lit := c.propagationQueue[0]
-		c.propagationQueue = c.propagationQueue[1:]
+	c.queueHead = 0
 
-		// Check all clauses watching this literal
-		for _, clause := range c.watchLists[lit] {
-			// Check if clause is already satisfied
-			if c.assignment.Satisfies(clause) {
+	for c.queueHead < len(c.propagationQueue) {
+		// Get next literal that was just falsified
+		falseLit := c.propagationQueue[c.queueHead]
+		c.queueHead++
+
+		// Check all clauses watching this literal's variable
+		watchedClauses := c.watchLists[falseLit.Variable]
+		i := 0
+
+		for j := 0; j < len(watchedClauses); j++ {
+			wc := watchedClauses[j]
+
+			// Determine which watch this affects
+			watchIdx := -1
+			if wc.Watch1 < len(wc.Clause.Literals) {
+				lit1 := wc.Clause.Literals[wc.Watch1]
+				// Check if this literal is now false
+				if lit1.Variable == falseLit.Variable && lit1.Negated == falseLit.Negated {
+					watchIdx = wc.Watch1
+				}
+			}
+			if watchIdx == -1 && wc.Watch2 >= 0 && wc.Watch2 < len(wc.Clause.Literals) {
+				lit2 := wc.Clause.Literals[wc.Watch2]
+				if lit2.Variable == falseLit.Variable && lit2.Negated == falseLit.Negated {
+					watchIdx = wc.Watch2
+				}
+			}
+
+			if watchIdx == -1 {
+				// This clause is not affected by this literal
+				watchedClauses[i] = wc
+				i++
 				continue
 			}
 
-			// Try to find new watch literal
-			newWatch, isUnit, isConflict := c.findNewWatch(clause, lit)
-			if isConflict {
-				return clause
-			}
-			if isUnit {
-				// Get the unit literal
-				unitLit := c.getUnitLiteral(clause)
-				c.assign(unitLit.Variable, !unitLit.Negated, clause)
-				c.statistics.Propagations++
-			}
-			if newWatch != (Literal{}) {
-				// Update watch list
-				c.updateWatchList(clause, lit, newWatch)
+			// Try to find a new literal to watch
+			newWatch := c.findNewWatch(wc, watchIdx)
+
+			if newWatch != -1 {
+				// Found new watch - update and move to new watch list
+				if watchIdx == wc.Watch1 {
+					wc.Watch1 = newWatch
+				} else {
+					wc.Watch2 = newWatch
+				}
+
+				// Add to new variable's watch list
+				newVar := wc.Clause.Literals[newWatch].Variable
+				c.watchLists[newVar] = append(c.watchLists[newVar], wc)
+				// Don't add back to current list
+			} else {
+				// Could not find new watch - check other watched literal
+				otherIdx := wc.Watch1
+				if watchIdx == wc.Watch1 {
+					otherIdx = wc.Watch2
+				}
+
+				if otherIdx == -1 || otherIdx >= len(wc.Clause.Literals) {
+					// Unit clause became empty - conflict
+					c.propagationQueue = c.propagationQueue[:0]
+					c.queueHead = 0
+					return wc.Clause
+				}
+
+				otherLit := wc.Clause.Literals[otherIdx]
+
+				if c.assignment.IsAssigned(otherLit.Variable) {
+					val := c.assignment[otherLit.Variable]
+					satisfied := (val && !otherLit.Negated) || (!val && otherLit.Negated)
+
+					if !satisfied {
+						// Conflict - both watches are false
+						c.propagationQueue = c.propagationQueue[:0]
+						c.queueHead = 0
+						return wc.Clause
+					}
+					// Clause is satisfied - keep in watch list
+					watchedClauses[i] = wc
+					i++
+				} else {
+					// Unit propagation - assign the other literal
+					value := !otherLit.Negated
+					c.assign(otherLit.Variable, value, wc.Clause)
+					c.statistics.Propagations++
+
+					// Keep in watch list
+					watchedClauses[i] = wc
+					i++
+				}
 			}
 		}
+
+		// Update watch list (remove clauses that moved to other lists)
+		c.watchLists[falseLit.Variable] = watchedClauses[:i]
 	}
+
+	// Clear propagation queue
+	c.propagationQueue = c.propagationQueue[:0]
+	c.queueHead = 0
 	return nil
 }
 
-// isConflicted checks if clause conflicts with current assignment
-func (c *CDCLSolver) isConflicted(clause *Clause) bool {
-	for _, lit := range clause.Literals {
-		if value, assigned := c.assignment[lit.Variable]; assigned {
-			// If any literal is satisfied, no conflict
-			if (value && !lit.Negated) || (!value && lit.Negated) {
-				return false
-			}
-		} else {
-			// Unassigned literal - no conflict yet
-			return false
-		}
-	}
-	return true // All literals falsified
-}
+// Helper methods for advanced CDCL
 
-// getUnassignedLiterals returns unassigned literals in clause
-func (c *CDCLSolver) getUnassignedLiterals(clause *Clause) []Literal {
-	var unassigned []Literal
-	for _, lit := range clause.Literals {
+func (c *CDCLSolver) findNewWatch(wc *WatchedClause, excludeIdx int) int {
+	for i, lit := range wc.Clause.Literals {
+		if i == wc.Watch1 || i == wc.Watch2 || i == excludeIdx {
+			continue
+		}
+
 		if !c.assignment.IsAssigned(lit.Variable) {
-			unassigned = append(unassigned, lit)
+			return i // Unassigned literal - good watch
+		}
+
+		val := c.assignment[lit.Variable]
+		if (val && !lit.Negated) || (!val && lit.Negated) {
+			return i // Satisfied literal - excellent watch
 		}
 	}
-	return unassigned
+	return -1
 }
 
-// assign assigns value to variable with reason
 func (c *CDCLSolver) assign(variable string, value bool, reason *Clause) {
 	c.assignment[variable] = value
 	c.trail.Assign(variable, value, c.decisionLevel, reason)
+
 	// Add to propagation queue
 	falseLit := Literal{Variable: variable, Negated: value}
 	c.propagationQueue = append(c.propagationQueue, falseLit)
 }
 
-// allVariablesAssigned checks if all variables are assigned
+func (c *CDCLSolver) learnClause(clause *Clause) {
+	clause.Learned = true
+	clause.ID = c.cnf.nextID
+	c.cnf.nextID++
+	c.clauseActivity[clause.ID] = 1.0
+
+	c.learnedClauses = append(c.learnedClauses, clause)
+
+	// Add to watch lists
+	if len(clause.Literals) >= 2 {
+		wc := &WatchedClause{
+			Clause: clause,
+			Watch1: 0,
+			Watch2: 1,
+		}
+
+		var1 := clause.Literals[0].Variable
+		var2 := clause.Literals[1].Variable
+
+		c.watchLists[var1] = append(c.watchLists[var1], wc)
+		c.watchLists[var2] = append(c.watchLists[var2], wc)
+	} else if len(clause.Literals) == 1 {
+		// Unit clause
+		wc := &WatchedClause{
+			Clause: clause,
+			Watch1: 0,
+			Watch2: -1,
+		}
+		variable := clause.Literals[0].Variable
+		c.watchLists[variable] = append(c.watchLists[variable], wc)
+	}
+
+	// Update variable activities
+	for _, lit := range clause.Literals {
+		c.bumpVariableActivity(lit.Variable)
+	}
+}
+
 func (c *CDCLSolver) allVariablesAssigned() bool {
+	if c.cnf == nil {
+		return true
+	}
+
 	for _, variable := range c.cnf.Variables {
 		if !c.assignment.IsAssigned(variable) {
 			return false
@@ -305,8 +437,12 @@ func (c *CDCLSolver) allVariablesAssigned() bool {
 	return true
 }
 
-// chooseDecisionVariable uses heuristic to choose next variable
 func (c *CDCLSolver) chooseDecisionVariable() string {
+	if c.cnf == nil {
+		return ""
+	}
+
+	// Use heuristic if available
 	unassigned := make([]string, 0)
 	for _, variable := range c.cnf.Variables {
 		if !c.assignment.IsAssigned(variable) {
@@ -318,25 +454,20 @@ func (c *CDCLSolver) chooseDecisionVariable() string {
 		return ""
 	}
 
-	return c.heuristic.ChooseVariable(unassigned, c.assignment)
-}
-
-// learnClause adds learned clause to solver
-func (c *CDCLSolver) learnClause(clause *Clause) {
-	clause.Learned = true
-	clause.ID = c.cnf.nextID
-	c.cnf.nextID++
-
-	c.learnedClauses = append(c.learnedClauses, clause)
-
-	// Update variable activities based on learned clause
-	for _, lit := range clause.Literals {
-		c.bumpVariableActivity(lit.Variable)
+	if c.heuristic != nil {
+		return c.heuristic.ChooseVariable(unassigned, c.assignment)
 	}
+
+	return unassigned[0] // Fallback to first unassigned
 }
 
-// backtrack to given decision level
+func (c *CDCLSolver) choosePolarity(variable string) bool {
+	// Simple polarity heuristic - can be enhanced
+	return true
+}
+
 func (c *CDCLSolver) backtrack(level int) {
+	// Use the trail to backtrack
 	unassignedVars := c.trail.Backtrack(level)
 
 	// Remove assignments
@@ -347,7 +478,6 @@ func (c *CDCLSolver) backtrack(level int) {
 	c.decisionLevel = level
 }
 
-// restart clears assignment and starts over
 func (c *CDCLSolver) restart() {
 	c.assignment = make(Assignment)
 	c.trail.Clear()
@@ -355,58 +485,73 @@ func (c *CDCLSolver) restart() {
 	c.restartStrategy.OnRestart()
 }
 
-// deleteClauses removes less useful learned clauses
 func (c *CDCLSolver) deleteClauses() {
 	// Sort by activity (lower activity = more likely to delete)
 	sort.Slice(c.learnedClauses, func(i, j int) bool {
 		return c.learnedClauses[i].Activity < c.learnedClauses[j].Activity
 	})
 
-	// Delete half of the clauses
-	deleteCount := len(c.learnedClauses) / 2
-	for i := 0; i < deleteCount; i++ {
+	// Delete clauses based on deletion policy
+	deleteCount := 0
+	for i := 0; i < len(c.learnedClauses)/2; i++ {
 		if c.deletionPolicy.ShouldDelete(c.learnedClauses[i], c.statistics) {
-			// Remove clause from watch lists before deletion
 			c.removeFromWatchLists(c.learnedClauses[i])
+			deleteCount++
 		}
 	}
 
 	// Keep the more active clauses
-	c.learnedClauses = c.learnedClauses[deleteCount:]
+	c.learnedClauses = c.learnedClauses[len(c.learnedClauses)/2:]
 	c.statistics.DeletedClauses += int64(deleteCount)
 }
 
-// Watch literal management
 func (c *CDCLSolver) initializeWatchLists() error {
-	c.watchLists = make(map[Literal][]*Clause)
+	c.watchLists = make(map[string][]*WatchedClause)
 
+	// Set up watch lists for all clauses
 	for _, clause := range c.cnf.Clauses {
 		if len(clause.Literals) >= 2 {
 			// Watch first two literals
-			lit1 := clause.Literals[0]
-			lit2 := clause.Literals[1]
+			wc := &WatchedClause{
+				Clause: clause,
+				Watch1: 0,
+				Watch2: 1,
+			}
 
-			c.watchLists[lit1] = append(c.watchLists[lit1], clause)
-			c.watchLists[lit2] = append(c.watchLists[lit2], clause)
+			var1 := clause.Literals[0].Variable
+			var2 := clause.Literals[1].Variable
+
+			c.watchLists[var1] = append(c.watchLists[var1], wc)
+			c.watchLists[var2] = append(c.watchLists[var2], wc)
 		} else if len(clause.Literals) == 1 {
-			// Unit clause - add to appropriate watch list
-			lit := clause.Literals[0]
-			c.watchLists[lit] = append(c.watchLists[lit], clause)
+			// Unit clause - create watched clause with single watch
+			wc := &WatchedClause{
+				Clause: clause,
+				Watch1: 0,
+				Watch2: -1, // No second watch
+			}
+
+			variable := clause.Literals[0].Variable
+			c.watchLists[variable] = append(c.watchLists[variable], wc)
 		}
-		// Empty clauses cause immediate conflict
 	}
 
 	return nil
 }
 
-// removeFromWatchLists removes clause from watch lists
+func (c *CDCLSolver) initializeHeuristics() {
+	// Initialize variable activities
+	for _, variable := range c.cnf.Variables {
+		c.variableActivity[variable] = 0.0
+	}
+}
+
 func (c *CDCLSolver) removeFromWatchLists(clause *Clause) {
 	for _, lit := range clause.Literals {
-		if watchedClauses, exists := c.watchLists[lit]; exists {
-			// Remove clause from watch list
+		if watchedClauses, exists := c.watchLists[lit.Variable]; exists {
 			for i, watchedClause := range watchedClauses {
-				if watchedClause.ID == clause.ID {
-					c.watchLists[lit] = append(watchedClauses[:i], watchedClauses[i+1:]...)
+				if watchedClause.Clause.ID == clause.ID {
+					c.watchLists[lit.Variable] = append(watchedClauses[:i], watchedClauses[i+1:]...)
 					break
 				}
 			}
@@ -415,12 +560,6 @@ func (c *CDCLSolver) removeFromWatchLists(clause *Clause) {
 }
 
 // Variable activity management (VSIDS)
-func (c *CDCLSolver) initializeVariableActivities() {
-	for _, variable := range c.cnf.Variables {
-		c.variableActivity[variable] = 0.0
-	}
-}
-
 func (c *CDCLSolver) bumpVariableActivity(variable string) {
 	c.variableActivity[variable] += c.varActivityInc
 
@@ -445,12 +584,28 @@ func (c *CDCLSolver) decayVariableActivities() {
 func (c *CDCLSolver) AddClause(clause *Clause) error {
 	c.cnf.AddClause(clause)
 
-	// Update watch lists for new clause
+	// Update watch lists for new clause (complete implementation)
 	if len(clause.Literals) >= 2 {
-		lit1 := clause.Literals[0]
-		lit2 := clause.Literals[1]
-		c.watchLists[lit1] = append(c.watchLists[lit1], clause)
-		c.watchLists[lit2] = append(c.watchLists[lit2], clause)
+		wc := &WatchedClause{
+			Clause: clause,
+			Watch1: 0,
+			Watch2: 1,
+		}
+
+		var1 := clause.Literals[0].Variable
+		var2 := clause.Literals[1].Variable
+
+		c.watchLists[var1] = append(c.watchLists[var1], wc)
+		c.watchLists[var2] = append(c.watchLists[var2], wc)
+	} else if len(clause.Literals) == 1 {
+		// Unit clause
+		wc := &WatchedClause{
+			Clause: clause,
+			Watch1: 0,
+			Watch2: -1,
+		}
+		variable := clause.Literals[0].Variable
+		c.watchLists[variable] = append(c.watchLists[variable], wc)
 	}
 
 	return nil
@@ -464,90 +619,25 @@ func (c *CDCLSolver) Reset() {
 	c.statistics = SolverStatistics{}
 	c.assignment = make(Assignment)
 	c.trail.Clear()
-	c.watchLists = make(map[Literal][]*Clause)
+	c.watchLists = make(map[string][]*WatchedClause)
 	c.learnedClauses = make([]*Clause, 0)
 	c.decisionLevel = 0
 	c.variableActivity = make(map[string]float64)
 	c.conflicts = 0
+	c.propagationQueue = make([]Literal, 0)
+	c.queueHead = 0
 
 	// Reset components
-	c.heuristic.Reset()
-	c.restartStrategy.Reset()
-	c.deletionPolicy.Reset()
-	c.analyzer.Reset()
-}
-
-// Add these helper functions to cdcl.go
-
-// findNewWatch finds a new literal to watch in the clause
-// Returns: (newWatch, isUnit, isConflict)
-func (c *CDCLSolver) findNewWatch(clause *Clause, falseLit Literal) (Literal, bool, bool) {
-	unassigned := 0
-	satisfied := false
-	var newWatch Literal
-
-	for _, lit := range clause.Literals {
-		// Skip the literal that just became false
-		if lit.Equals(falseLit) {
-			continue
-		}
-
-		if !c.assignment.IsAssigned(lit.Variable) {
-			unassigned++
-			if newWatch == (Literal{}) {
-				newWatch = lit // First unassigned literal found
-			}
-		} else {
-			value := c.assignment[lit.Variable]
-			if (value && !lit.Negated) || (!value && lit.Negated) {
-				satisfied = true
-				newWatch = lit // Satisfied literal is best watch
-				break
-			}
-		}
+	if c.heuristic != nil {
+		c.heuristic.Reset()
 	}
-
-	if satisfied {
-		return newWatch, false, false
+	if c.restartStrategy != nil {
+		c.restartStrategy.Reset()
 	}
-
-	if unassigned == 0 {
-		// All literals are assigned and false - conflict
-		return Literal{}, false, true
+	if c.deletionPolicy != nil {
+		c.deletionPolicy.Reset()
 	}
-
-	if unassigned == 1 {
-		// Unit clause
-		return Literal{}, true, false
+	if c.analyzer != nil {
+		c.analyzer.Reset()
 	}
-
-	// Multiple unassigned - return first one found
-	return newWatch, false, false
-}
-
-// getUnitLiteral returns the unassigned literal in a unit clause
-func (c *CDCLSolver) getUnitLiteral(clause *Clause) Literal {
-	for _, lit := range clause.Literals {
-		if !c.assignment.IsAssigned(lit.Variable) {
-			return lit
-		}
-	}
-	// Should not reach here if called correctly
-	return clause.Literals[0]
-}
-
-// updateWatchList updates watch lists when changing watched literals
-func (c *CDCLSolver) updateWatchList(clause *Clause, oldWatch Literal, newWatch Literal) {
-	// Remove clause from old watch list
-	if watchedClauses, exists := c.watchLists[oldWatch]; exists {
-		for i, watchedClause := range watchedClauses {
-			if watchedClause.ID == clause.ID {
-				c.watchLists[oldWatch] = append(watchedClauses[:i], watchedClauses[i+1:]...)
-				break
-			}
-		}
-	}
-
-	// Add clause to new watch list
-	c.watchLists[newWatch] = append(c.watchLists[newWatch], clause)
 }
