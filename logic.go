@@ -285,6 +285,19 @@ func Nor(inputs ...bool) bool {
 	return !Or(inputs...)
 }
 
+// Xnor performs logical XNOR (exclusive NOR) operation on multiple boolean values.
+// It returns true if an even number of inputs are true (opposite of XOR).
+//
+// Example:
+//
+//	Xnor(true, true)         // true
+//	Xnor(true, false)        // false
+//	Xnor(false, false)       // true
+//	Xnor(true, true, true)   // false (odd number of trues)
+func Xnor(inputs ...bool) bool {
+	return !Xor(inputs...)
+}
+
 // Implies performs logical implication (A → B).
 // It is equivalent to (!A || B). The implication is false only when
 // the antecedent is true and the consequent is false.
@@ -585,6 +598,7 @@ func Contradiction(variables []string, fn func(...bool) bool) bool {
 
 // Contingency checks if a logical expression is contingent (sometimes true, sometimes false)
 // for the given input combinations. A contingent expression is neither a tautology nor a contradiction.
+// This optimized version evaluates the function only once across all combinations.
 //
 // Example:
 //
@@ -595,7 +609,31 @@ func Contradiction(variables []string, fn func(...bool) bool) bool {
 //	}
 //	isContingent := Contingency(variables, fn) // true
 func Contingency(variables []string, fn func(...bool) bool) bool {
-	return !Tautology(variables, fn) && !Contradiction(variables, fn)
+	n := len(variables)
+	hasTrue := false
+	hasFalse := false
+
+	for i := 0; i < (1 << n); i++ {
+		inputs := make([]bool, n)
+		for j := 0; j < n; j++ {
+			inputs[j] = (i>>j)&1 == 1
+		}
+
+		result := fn(inputs...)
+		if result {
+			hasTrue = true
+		} else {
+			hasFalse = true
+		}
+
+		// Early termination: if we've seen both true and false, it's contingent
+		if hasTrue && hasFalse {
+			return true
+		}
+	}
+
+	// If we only saw all true or all false, it's not contingent
+	return false
 }
 
 // Public API functions for expression evaluation
