@@ -1,9 +1,11 @@
 // Package logic provides high-performance boolean logic operations,
-// bitwise manipulation, circuit simulation, and truth table generation.
+// bitwise manipulation, circuit simulation, truth table generation,
+// and logical expression parsing/evaluation.
 //
 // This package offers a comprehensive set of tools for working with boolean
 // logic in Go, including basic logical operations, vector operations,
-// bitwise manipulation, logic gate simulation, and truth table analysis.
+// bitwise manipulation, logic gate simulation, truth table analysis,
+// and AST-based expression evaluation.
 //
 // Basic usage:
 //
@@ -11,11 +13,188 @@
 //	vector := logic.NewBoolVector(true, false, true)
 //	bits := logic.NewBitwiseInt(42)
 //
-// The package is designed for performance-critical applications and uses
-// optimized algorithms throughout.
+//	// Expression evaluation
+//	result, err := logic.EvaluateExpression("A & B | !C", map[string]bool{
+//	    "A": true, "B": false, "C": true,
+//	})
 package logic
 
-import "unsafe"
+import (
+	"fmt"
+	"strings"
+	"unsafe"
+)
+
+// NodeType represents different types of AST nodes for logical expressions
+type NodeType int
+
+const (
+	NodeVariable NodeType = iota
+	NodeConstant
+	NodeNot
+	NodeAnd
+	NodeOr
+	NodeXor
+	NodeNand
+	NodeNor
+	NodeImplies
+	NodeIff
+)
+
+// String returns string representation of NodeType for debugging
+func (nt NodeType) String() string {
+	switch nt {
+	case NodeVariable:
+		return "Variable"
+	case NodeConstant:
+		return "Constant"
+	case NodeNot:
+		return "Not"
+	case NodeAnd:
+		return "And"
+	case NodeOr:
+		return "Or"
+	case NodeXor:
+		return "Xor"
+	case NodeNand:
+		return "Nand"
+	case NodeNor:
+		return "Nor"
+	case NodeImplies:
+		return "Implies"
+	case NodeIff:
+		return "Iff"
+	default:
+		return "Unknown"
+	}
+}
+
+// ASTNode represents a node in the Abstract Syntax Tree for logical expressions.
+// It forms the core structure for parsing and evaluating logical expressions.
+type ASTNode struct {
+	Type     NodeType
+	Value    string     // Used for variables and constants
+	Children []*ASTNode // Child nodes for operations
+	Position int        // Position in original expression for error reporting
+}
+
+// EvaluationContext maps variable names to their boolean values
+// for expression evaluation.
+type EvaluationContext map[string]bool
+
+// Evaluate evaluates the AST node with the given variable context.
+// Returns the boolean result and any evaluation error.
+func (node *ASTNode) Evaluate(ctx EvaluationContext) (bool, error) {
+	switch node.Type {
+	case NodeVariable:
+		if value, exists := ctx[node.Value]; exists {
+			return value, nil
+		}
+		return false, NewLogicError("ASTNode.Evaluate",
+			fmt.Sprintf("undefined variable: %s", node.Value))
+
+	case NodeConstant:
+		lower := strings.ToLower(node.Value)
+		return lower == "true" || lower == "1" || lower == "t", nil
+
+	case NodeNot:
+		if len(node.Children) != 1 {
+			return false, NewLogicError("ASTNode.Evaluate", "NOT operation requires exactly one operand")
+		}
+		childVal, err := node.Children[0].Evaluate(ctx)
+		if err != nil {
+			return false, err
+		}
+		return Not(childVal), nil
+
+	case NodeAnd:
+		values := make([]bool, len(node.Children))
+		for i, child := range node.Children {
+			val, err := child.Evaluate(ctx)
+			if err != nil {
+				return false, err
+			}
+			values[i] = val
+		}
+		return And(values...), nil
+
+	case NodeOr:
+		values := make([]bool, len(node.Children))
+		for i, child := range node.Children {
+			val, err := child.Evaluate(ctx)
+			if err != nil {
+				return false, err
+			}
+			values[i] = val
+		}
+		return Or(values...), nil
+
+	case NodeXor:
+		values := make([]bool, len(node.Children))
+		for i, child := range node.Children {
+			val, err := child.Evaluate(ctx)
+			if err != nil {
+				return false, err
+			}
+			values[i] = val
+		}
+		return Xor(values...), nil
+
+	case NodeNand:
+		values := make([]bool, len(node.Children))
+		for i, child := range node.Children {
+			val, err := child.Evaluate(ctx)
+			if err != nil {
+				return false, err
+			}
+			values[i] = val
+		}
+		return Nand(values...), nil
+
+	case NodeNor:
+		values := make([]bool, len(node.Children))
+		for i, child := range node.Children {
+			val, err := child.Evaluate(ctx)
+			if err != nil {
+				return false, err
+			}
+			values[i] = val
+		}
+		return Nor(values...), nil
+
+	case NodeImplies:
+		if len(node.Children) != 2 {
+			return false, NewLogicError("ASTNode.Evaluate", "IMPLIES operation requires exactly two operands")
+		}
+		left, err := node.Children[0].Evaluate(ctx)
+		if err != nil {
+			return false, err
+		}
+		right, err := node.Children[1].Evaluate(ctx)
+		if err != nil {
+			return false, err
+		}
+		return Implies(left, right), nil
+
+	case NodeIff:
+		if len(node.Children) != 2 {
+			return false, NewLogicError("ASTNode.Evaluate", "IFF operation requires exactly two operands")
+		}
+		left, err := node.Children[0].Evaluate(ctx)
+		if err != nil {
+			return false, err
+		}
+		right, err := node.Children[1].Evaluate(ctx)
+		if err != nil {
+			return false, err
+		}
+		return Iff(left, right), nil
+
+	default:
+		return false, NewLogicError("ASTNode.Evaluate",
+			fmt.Sprintf("unknown node type: %v", node.Type))
+	}
+}
 
 // And performs logical AND operation on multiple boolean values.
 // It returns true only if all inputs are true. If no inputs are provided,
@@ -417,4 +596,59 @@ func Contradiction(variables []string, fn func(...bool) bool) bool {
 //	isContingent := Contingency(variables, fn) // true
 func Contingency(variables []string, fn func(...bool) bool) bool {
 	return !Tautology(variables, fn) && !Contradiction(variables, fn)
+}
+
+// Public API functions for expression evaluation
+// EvaluateExpression parses and evaluates a logical expression with given variables.
+//
+// Supported operators:
+//   - AND: &, ∧, and, AND
+//   - OR: |, ∨, or, OR
+//   - NOT: !, ¬, not, NOT
+//   - XOR: ^, ⊕, xor, XOR
+//   - IMPLIES: ->, →, implies, IMPLIES
+//   - IFF: <->, ↔, iff, IFF
+//
+// Example:
+//
+//	result, err := EvaluateExpression("(A & B) | !C", map[string]bool{
+//	    "A": true, "B": false, "C": true,
+//	})
+func EvaluateExpression(expr string, variables map[string]bool) (bool, error) {
+	ast, err := ParseExpression(expr)
+	if err != nil {
+		return false, err
+	}
+	return ast.Evaluate(EvaluationContext(variables))
+}
+
+// ValidateExpression checks if an expression is syntactically valid.
+// Returns nil if valid, error with details if invalid.
+func ValidateExpression(expr string) error {
+	_, err := ParseExpression(expr)
+	return err
+}
+
+// GenerateTruthTableFromExpression creates a truth table from a logical expression string.
+// This integrates the expression parser with the existing truth table functionality.
+//
+// Example:
+//
+//	table, err := GenerateTruthTableFromExpression("A -> (B & C)", []string{"A", "B", "C"})
+func GenerateTruthTableFromExpression(expr string, variables []string) (*TruthTable, error) {
+	ast, err := ParseExpression(expr)
+	if err != nil {
+		return nil, err
+	}
+
+	return GenerateTruthTable(variables, func(inputs ...bool) bool {
+		ctx := make(EvaluationContext)
+		for i, variable := range variables {
+			if i < len(inputs) {
+				ctx[variable] = inputs[i]
+			}
+		}
+		result, _ := ast.Evaluate(ctx)
+		return result
+	}), nil
 }

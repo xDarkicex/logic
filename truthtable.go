@@ -58,7 +58,7 @@ func GenerateTruthTable(variables []string, fn func(...bool) bool) *TruthTable {
 
 		// Generate binary representation for this row
 		for j := 0; j < n; j++ {
-			value := (i>>j)&1 == 1
+			value := (i>>(n-1-j))&1 == 1
 			inputs[variables[j]] = value
 			inputSlice[j] = value
 		}

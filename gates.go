@@ -214,8 +214,10 @@ type Circuit struct {
 //
 //	circuit := NewCircuit([]string{"A", "B", "C"})
 func NewCircuit(inputs []string) *Circuit {
+	inputVars := make([]string, len(inputs))
+	copy(inputVars, inputs) // Actually copy the input values
 	return &Circuit{
-		InputVars:     make([]string, len(inputs)),
+		InputVars:     inputVars,
 		Nodes:         make(map[string]*CircuitNode),
 		Outputs:       make([]string, 0),
 		topology:      make([]string, 0),
