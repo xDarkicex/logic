@@ -1,6 +1,10 @@
 package classical
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/xDarkicex/logic/core"
+)
 
 // Parser implements recursive descent parsing for logical expressions
 type Parser struct {
@@ -16,7 +20,7 @@ func ParseExpression(expr string) (*ASTNode, error) {
 	// Check for lexical errors
 	for _, token := range tokens {
 		if token.Type == TokenError {
-			return nil, NewLogicError("ParseExpression",
+			return nil, core.NewLogicError("classical", "ParseExpression",
 				fmt.Sprintf("invalid character '%s' at position %d", token.Value, token.Position))
 		}
 	}
@@ -29,7 +33,7 @@ func ParseExpression(expr string) (*ASTNode, error) {
 
 	// Check for trailing tokens
 	if !parser.isAtEnd() {
-		return nil, NewLogicError("ParseExpression",
+		return nil, core.NewLogicError("classical", "ParseExpression",
 			fmt.Sprintf("unexpected token '%s' at position %d",
 				parser.peek().Value, parser.peek().Position))
 	}
@@ -214,14 +218,14 @@ func (p *Parser) parsePrimary() (*ASTNode, error) {
 		}
 
 		if !p.match(TokenRightParen) {
-			return nil, NewLogicError("Parser.parsePrimary",
+			return nil, core.NewLogicError("classical", "Parser.parsePrimary",
 				fmt.Sprintf("expected ')' at position %d", p.peek().Position))
 		}
 
 		return expr, nil
 	}
 
-	return nil, NewLogicError("Parser.parsePrimary",
+	return nil, core.NewLogicError("classical", "Parser.parsePrimary",
 		fmt.Sprintf("expected expression at position %d", p.peek().Position))
 }
 

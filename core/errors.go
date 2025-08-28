@@ -1,6 +1,8 @@
 package core
 
-import "fmt"
+import (
+	"fmt"
+)
 
 // LogicError represents an error in logic operations
 type LogicError struct {

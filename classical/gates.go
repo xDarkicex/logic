@@ -3,6 +3,8 @@ package classical
 import (
 	"fmt"
 	"strings"
+
+	"github.com/xDarkicex/logic/core"
 )
 
 // Gate represents a logical gate interface that can evaluate boolean inputs.
@@ -235,7 +237,7 @@ func NewCircuit(inputs []string) *Circuit {
 //	circuit.AddNode("gate2", OrGate{}, []string{"gate1", "C"})
 func (c *Circuit) AddNode(nodeID string, gate Gate, inputs []string) error {
 	if _, exists := c.Nodes[nodeID]; exists {
-		return NewLogicError("Circuit.AddNode", fmt.Sprintf("node ID '%s' already exists", nodeID))
+		return core.NewLogicError("classical", "Circuit.AddNode", fmt.Sprintf("node ID '%s' already exists", nodeID))
 	}
 
 	c.Nodes[nodeID] = &CircuitNode{
@@ -262,7 +264,7 @@ func (c *Circuit) SetOutputs(outputs []string) error {
 	// Validate that all output nodes exist
 	for _, outputID := range outputs {
 		if _, exists := c.Nodes[outputID]; !exists {
-			return NewLogicError("Circuit.SetOutputs", fmt.Sprintf("output node '%s' does not exist", outputID))
+			return core.NewLogicError("classical", "Circuit.SetOutputs", fmt.Sprintf("output node '%s' does not exist", outputID))
 		}
 	}
 
@@ -285,7 +287,7 @@ func (c *Circuit) buildTopology() error {
 	var visit func(string) error
 	visit = func(nodeID string) error {
 		if tempMark[nodeID] {
-			return NewLogicError("Circuit.buildTopology", "circular dependency detected")
+			return core.NewLogicError("classical", "Circuit.buildTopology", "circular dependency detected")
 		}
 		if visited[nodeID] {
 			return nil
@@ -339,7 +341,7 @@ func (c *Circuit) Simulate(inputs map[string]bool) (map[string]bool, error) {
 	// Validate all required inputs are provided
 	for _, inputVar := range c.InputVars {
 		if _, exists := inputs[inputVar]; !exists {
-			return nil, NewLogicError("Circuit.Simulate", fmt.Sprintf("missing input value for '%s'", inputVar))
+			return nil, core.NewLogicError("classical", "Circuit.Simulate", fmt.Sprintf("missing input value for '%s'", inputVar))
 		}
 	}
 
@@ -367,7 +369,7 @@ func (c *Circuit) Simulate(inputs map[string]bool) (map[string]bool, error) {
 				// Node output
 				inputValues[i] = *refNode.Value
 			} else {
-				return nil, NewLogicError("Circuit.Simulate",
+				return nil, core.NewLogicError("classical", "Circuit.Simulate",
 					fmt.Sprintf("unresolved input '%s' for node '%s'", inputRef, nodeID))
 			}
 		}
@@ -383,7 +385,7 @@ func (c *Circuit) Simulate(inputs map[string]bool) (map[string]bool, error) {
 		if node, exists := c.Nodes[outputID]; exists && node.Value != nil {
 			results[outputID] = *node.Value
 		} else {
-			return nil, NewLogicError("Circuit.Simulate", fmt.Sprintf("output node '%s' not evaluated", outputID))
+			return nil, core.NewLogicError("classical", "Circuit.Simulate", fmt.Sprintf("output node '%s' not evaluated", outputID))
 		}
 	}
 
@@ -395,10 +397,10 @@ func (c *Circuit) Simulate(inputs map[string]bool) (map[string]bool, error) {
 func (c *Circuit) GetNodeValue(nodeID string) (bool, error) {
 	node, exists := c.Nodes[nodeID]
 	if !exists {
-		return false, NewLogicError("Circuit.GetNodeValue", fmt.Sprintf("node '%s' does not exist", nodeID))
+		return false, core.NewLogicError("classical", "Circuit.GetNodeValue", fmt.Sprintf("node '%s' does not exist", nodeID))
 	}
 	if node.Value == nil {
-		return false, NewLogicError("Circuit.GetNodeValue", fmt.Sprintf("node '%s' has not been evaluated", nodeID))
+		return false, core.NewLogicError("classical", "Circuit.GetNodeValue", fmt.Sprintf("node '%s' has not been evaluated", nodeID))
 	}
 	return *node.Value, nil
 }

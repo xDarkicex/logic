@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"strings"
 	"unsafe"
+
+	"github.com/xDarkicex/logic/core"
 )
 
 // NodeType represents different types of AST nodes for logical expressions
@@ -90,7 +92,7 @@ func (node *ASTNode) Evaluate(ctx EvaluationContext) (bool, error) {
 		if value, exists := ctx[node.Value]; exists {
 			return value, nil
 		}
-		return false, NewLogicError("ASTNode.Evaluate",
+		return false, core.NewLogicError("classical", "ASTNode.Evaluate",
 			fmt.Sprintf("undefined variable: %s", node.Value))
 
 	case NodeConstant:
@@ -99,7 +101,7 @@ func (node *ASTNode) Evaluate(ctx EvaluationContext) (bool, error) {
 
 	case NodeNot:
 		if len(node.Children) != 1 {
-			return false, NewLogicError("ASTNode.Evaluate", "NOT operation requires exactly one operand")
+			return false, core.NewLogicError("classical", "ASTNode.Evaluate", "NOT operation requires exactly one operand")
 		}
 		childVal, err := node.Children[0].Evaluate(ctx)
 		if err != nil {
@@ -164,7 +166,7 @@ func (node *ASTNode) Evaluate(ctx EvaluationContext) (bool, error) {
 
 	case NodeImplies:
 		if len(node.Children) != 2 {
-			return false, NewLogicError("ASTNode.Evaluate", "IMPLIES operation requires exactly two operands")
+			return false, core.NewLogicError("classical", "ASTNode.Evaluate", "IMPLIES operation requires exactly two operands")
 		}
 		left, err := node.Children[0].Evaluate(ctx)
 		if err != nil {
@@ -178,7 +180,7 @@ func (node *ASTNode) Evaluate(ctx EvaluationContext) (bool, error) {
 
 	case NodeIff:
 		if len(node.Children) != 2 {
-			return false, NewLogicError("ASTNode.Evaluate", "IFF operation requires exactly two operands")
+			return false, core.NewLogicError("classical", "ASTNode.Evaluate", "IFF operation requires exactly two operands")
 		}
 		left, err := node.Children[0].Evaluate(ctx)
 		if err != nil {
@@ -191,7 +193,7 @@ func (node *ASTNode) Evaluate(ctx EvaluationContext) (bool, error) {
 		return Iff(left, right), nil
 
 	default:
-		return false, NewLogicError("ASTNode.Evaluate",
+		return false, core.NewLogicError("classical", "ASTNode.Evaluate",
 			fmt.Sprintf("unknown node type: %v", node.Type))
 	}
 }
@@ -369,7 +371,7 @@ func NewBoolVector(values ...bool) BoolVector {
 //	result, err := v1.And(v2) // [false, false, true], nil
 func (bv BoolVector) And(other BoolVector) (BoolVector, error) {
 	if len(bv) != len(other) {
-		return nil, NewLogicError("BoolVector.And", "vector length mismatch")
+		return nil, core.NewLogicError("classical", "BoolVector.And", "vector length mismatch")
 	}
 
 	result := make(BoolVector, len(bv))
@@ -397,7 +399,7 @@ func (bv BoolVector) And(other BoolVector) (BoolVector, error) {
 //	result, err := v1.Or(v2) // [true, true, false], nil
 func (bv BoolVector) Or(other BoolVector) (BoolVector, error) {
 	if len(bv) != len(other) {
-		return nil, NewLogicError("BoolVector.Or", "vector length mismatch")
+		return nil, core.NewLogicError("classical", "BoolVector.Or", "vector length mismatch")
 	}
 
 	result := make(BoolVector, len(bv))
@@ -424,7 +426,7 @@ func (bv BoolVector) Or(other BoolVector) (BoolVector, error) {
 //	result, err := v1.Xor(v2) // [true, false, false], nil
 func (bv BoolVector) Xor(other BoolVector) (BoolVector, error) {
 	if len(bv) != len(other) {
-		return nil, NewLogicError("BoolVector.Xor", "vector length mismatch")
+		return nil, core.NewLogicError("classical", "BoolVector.Xor", "vector length mismatch")
 	}
 
 	result := make(BoolVector, len(bv))

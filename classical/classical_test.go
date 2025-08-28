@@ -3,7 +3,38 @@ package classical
 import (
 	"fmt"
 	"testing"
+
+	"github.com/xDarkicex/logic/core"
 )
+
+// Add test for new interface compliance
+func TestClassicalSystemInterface(t *testing.T) {
+	system := NewClassicalSystem()
+
+	// Test LogicSystem interface
+	if system.Name() != "classical" {
+		t.Errorf("Expected system name 'classical', got %s", system.Name())
+	}
+
+	ctx := core.NewEvaluationContext()
+	ctx.Set("A", true)
+	ctx.Set("B", false)
+
+	result, err := system.Evaluate("A & B", ctx)
+	if err != nil {
+		t.Fatalf("Evaluation failed: %v", err)
+	}
+
+	if result != false {
+		t.Errorf("Expected false, got %v", result)
+	}
+
+	// Test supported operators
+	ops := system.SupportedOperators()
+	if len(ops) == 0 {
+		t.Error("No supported operators returned")
+	}
+}
 
 func TestBasicParsing(t *testing.T) {
 	tests := []struct {
@@ -383,7 +414,7 @@ func TestUndefinedVariables(t *testing.T) {
 			}
 
 			// Check that it's specifically a LogicError about undefined variable
-			if logicErr, ok := err.(*LogicError); ok {
+			if logicErr, ok := err.(*core.LogicError); ok {
 				if logicErr.Op != "ASTNode.Evaluate" {
 					t.Errorf("Expected ASTNode.Evaluate error, got: %s", logicErr.Op)
 				}
@@ -886,7 +917,7 @@ func TestErrorHandling(t *testing.T) {
 		t.Error("Expected error for mismatched vector lengths")
 	}
 
-	logicErr, ok := err.(*LogicError)
+	logicErr, ok := err.(*core.LogicError)
 	if !ok {
 		t.Error("Expected LogicError type")
 	}
