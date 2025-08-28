@@ -54,6 +54,13 @@ type CDCLSolver struct {
 	// LBD tracking
 	lbdSum          int64 // Sum of all LBDs for average tracking
 	glueClauseCount int64 // Count of glue clauses (LBD <= 2)
+
+	// Caches for performance
+	unassignedCache []string
+	cacheValid      bool
+
+	// Additional performance optimizations
+	propagationCache map[string]bool // Cache for propagation state
 }
 
 // WatchedClause represents a clause with two-watched literals
@@ -100,12 +107,15 @@ func NewCDCLSolver() *CDCLSolver {
 		queueHead:        0,
 		lbdSum:           0,
 		glueClauseCount:  0,
+		unassignedCache:  make([]string, 0),
+		cacheValid:       false,
+		propagationCache: make(map[string]bool),
 	}
 
-	// Initialize advanced components by default
-	solver.heuristic = NewAdvancedVSIDSHeuristic()
-	solver.restartStrategy = NewAdaptiveRestartStrategy()
-	solver.deletionPolicy = NewAdvancedClauseDeletion()
+	// Initialize enhanced components by default (now the base versions include all enhancements)
+	solver.heuristic = NewVSIDSHeuristic()             // Now includes LRB, polarity, anti-aging
+	solver.restartStrategy = NewLubyRestartStrategy()  // Now hybrid Luby+Glucose
+	solver.deletionPolicy = NewActivityBasedDeletion() // Now LBD-aware
 	solver.analyzer = NewFirstUIPAnalyzer()
 	solver.preprocessor = NewSATPreprocessor()
 
@@ -170,6 +180,9 @@ func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverRe
 	c.conflicts = 0
 	c.lbdSum = 0
 	c.glueClauseCount = 0
+	c.unassignedCache = make([]string, 0)
+	c.cacheValid = false
+	c.propagationCache = make(map[string]bool)
 
 	// Initialize components
 	c.initializeWatchLists()
@@ -250,7 +263,7 @@ func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverRe
 		c.decisionLevel++
 		c.statistics.Decisions++
 
-		// Use advanced assignment to populate propagation queue
+		// Use enhanced polarity heuristic
 		polarity := c.choosePolarity(decisionVar)
 		c.assign(decisionVar, polarity, nil)
 	}
@@ -269,6 +282,12 @@ func (c *CDCLSolver) propagate() *Clause {
 		// Get next literal that was just falsified
 		falseLit := c.propagationQueue[c.queueHead]
 		c.queueHead++
+
+		// Check if we've already processed this variable in this propagation round
+		if c.propagationCache[falseLit.Variable] {
+			continue
+		}
+		c.propagationCache[falseLit.Variable] = true
 
 		// Check all clauses watching this literal's variable
 		watchedClauses := c.watchLists[falseLit.Variable]
@@ -326,6 +345,7 @@ func (c *CDCLSolver) propagate() *Clause {
 					// Unit clause became empty - conflict
 					c.propagationQueue = c.propagationQueue[:0]
 					c.queueHead = 0
+					c.propagationCache = make(map[string]bool)
 					return wc.Clause
 				}
 
@@ -339,6 +359,7 @@ func (c *CDCLSolver) propagate() *Clause {
 						// Conflict - both watches are false
 						c.propagationQueue = c.propagationQueue[:0]
 						c.queueHead = 0
+						c.propagationCache = make(map[string]bool)
 						return wc.Clause
 					}
 					// Clause is satisfied - keep in watch list
@@ -361,9 +382,10 @@ func (c *CDCLSolver) propagate() *Clause {
 		c.watchLists[falseLit.Variable] = watchedClauses[:i]
 	}
 
-	// Clear propagation queue
+	// Clear propagation queue and cache
 	c.propagationQueue = c.propagationQueue[:0]
 	c.queueHead = 0
+	c.propagationCache = make(map[string]bool)
 	return nil
 }
 
@@ -390,6 +412,7 @@ func (c *CDCLSolver) findNewWatch(wc *WatchedClause, excludeIdx int) int {
 func (c *CDCLSolver) assign(variable string, value bool, reason *Clause) {
 	c.assignment[variable] = value
 	c.trail.Assign(variable, value, c.decisionLevel, reason)
+	c.cacheValid = false // Invalidate unassigned cache
 
 	// Add to propagation queue
 	falseLit := Literal{Variable: variable, Negated: value}
@@ -491,28 +514,45 @@ func (c *CDCLSolver) chooseDecisionVariable() string {
 		return ""
 	}
 
-	// Use heuristic if available
-	unassigned := make([]string, 0)
-	for _, variable := range c.cnf.Variables {
-		if !c.assignment.IsAssigned(variable) {
-			unassigned = append(unassigned, variable)
+	// Use cached unassigned variables if available and valid
+	if !c.cacheValid {
+		c.unassignedCache = c.unassignedCache[:0] // Reuse slice capacity
+		for _, variable := range c.cnf.Variables {
+			if !c.assignment.IsAssigned(variable) {
+				c.unassignedCache = append(c.unassignedCache, variable)
+			}
 		}
+		c.cacheValid = true
 	}
 
-	if len(unassigned) == 0 {
+	if len(c.unassignedCache) == 0 {
 		return ""
 	}
 
+	// Use heuristic with proper error handling
 	if c.heuristic != nil {
-		return c.heuristic.ChooseVariable(unassigned, c.assignment)
+		chosen := c.heuristic.ChooseVariable(c.unassignedCache, c.assignment)
+		// Validate that chosen variable is actually unassigned
+		if chosen != "" && !c.assignment.IsAssigned(chosen) {
+			return chosen
+		}
+		// Fallback if heuristic returns invalid choice
 	}
 
-	return unassigned[0] // Fallback to first unassigned
+	// Fallback to first unassigned with bounds check
+	if len(c.unassignedCache) > 0 {
+		return c.unassignedCache[0]
+	}
+
+	return ""
 }
 
 func (c *CDCLSolver) choosePolarity(variable string) bool {
-	// Simple polarity heuristic - can be enhanced
-	return true
+	// Use enhanced polarity if VSIDS heuristic supports it
+	if vsids, ok := c.heuristic.(*VSIDSHeuristic); ok {
+		return vsids.GetPreferredPolarity(variable)
+	}
+	return true // Fallback
 }
 
 func (c *CDCLSolver) backtrack(level int) {
@@ -523,6 +563,7 @@ func (c *CDCLSolver) backtrack(level int) {
 	for _, variable := range unassignedVars {
 		delete(c.assignment, variable)
 	}
+	c.cacheValid = false // Invalidate unassigned cache
 
 	c.decisionLevel = level
 }
@@ -531,6 +572,7 @@ func (c *CDCLSolver) restart() {
 	c.assignment = make(Assignment)
 	c.trail.Clear()
 	c.decisionLevel = 0
+	c.cacheValid = false // Invalidate unassigned cache
 	c.restartStrategy.OnRestart()
 }
 
@@ -632,6 +674,7 @@ func (c *CDCLSolver) decayVariableActivities() {
 // Interface implementations
 func (c *CDCLSolver) AddClause(clause *Clause) error {
 	c.cnf.AddClause(clause)
+	c.cacheValid = false // Invalidate unassigned cache
 
 	// Update watch lists for new clause (complete implementation)
 	if len(clause.Literals) >= 2 {
@@ -677,6 +720,9 @@ func (c *CDCLSolver) Reset() {
 	c.queueHead = 0
 	c.lbdSum = 0
 	c.glueClauseCount = 0
+	c.unassignedCache = make([]string, 0)
+	c.cacheValid = false
+	c.propagationCache = make(map[string]bool)
 
 	// Reset components
 	if c.heuristic != nil {
