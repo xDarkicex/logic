@@ -3,6 +3,7 @@ package logic
 import (
 	"github.com/xDarkicex/logic/classical"
 	"github.com/xDarkicex/logic/core"
+	"github.com/xDarkicex/logic/sat"
 )
 
 // DefaultEngine provides backwards compatibility
@@ -11,6 +12,7 @@ var DefaultEngine *core.LogicEngine
 func init() {
 	DefaultEngine = core.NewLogicEngine()
 	DefaultEngine.RegisterSystem("classical", classical.NewClassicalSystem())
+	DefaultEngine.RegisterSystem("sat", sat.NewSATSystem())
 }
 
 // Backwards compatibility functions
@@ -48,6 +50,22 @@ func Implies(a, b bool) bool {
 
 func Iff(a, b bool) bool {
 	return classical.Iff(a, b)
+}
+
+// Add SAT convenience functions
+var SolveSAT = func(expr string) (*sat.SolverResult, error) {
+	system, exists := DefaultEngine.GetSystem("sat")
+	if !exists {
+		return nil, core.NewLogicError("", "SolveSAT", "SAT system not available")
+	}
+
+	satSys := system.(*sat.SATSystemImpl)
+	cnf, err := satSys.ConvertToCNF(expr)
+	if err != nil {
+		return nil, err
+	}
+
+	return satSys.Solve(cnf), nil
 }
 
 // Type aliases for backwards compatibility
