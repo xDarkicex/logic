@@ -39,18 +39,49 @@ type Clause struct {
 	ID       int     // Unique identifier for tracking
 	Learned  bool    // True if this is a learned clause
 	Activity float64 // For clause deletion heuristics
+	LBD      int     // Literal Block Distance (number of decision levels)
+	Glue     bool    // True if LBD <= 2 (very important clauses)
+	Tier     int     // Clause tier classification (0=core, 1=mid, 2=local)
 }
 
-// NewClause creates a new clause with given literals
+// NewClause creates a new clause with given literals and initializes LBD fields
 func NewClause(literals ...Literal) *Clause {
 	return &Clause{
 		Literals: literals,
 		Learned:  false,
 		Activity: 0.0,
+		LBD:      0,     // Will be computed during conflict analysis
+		Glue:     false, // Will be set based on computed LBD
+		Tier:     2,     // Default to local tier, will be updated based on LBD
 	}
 }
 
-// String returns string representation of clause
+// SetLBD sets the LBD and updates derived fields (Glue, Tier)
+func (c *Clause) SetLBD(lbd int) {
+	c.LBD = lbd
+	c.Glue = lbd <= 2
+
+	// Set tier based on LBD
+	if lbd <= 2 {
+		c.Tier = 0 // Core clauses - never delete
+	} else if lbd <= 6 {
+		c.Tier = 1 // Mid-tier clauses - delete carefully
+	} else {
+		c.Tier = 2 // Local clauses - delete aggressively
+	}
+}
+
+// IsGlue returns true if this is a glue clause (LBD <= 2)
+func (c *Clause) IsGlue() bool {
+	return c.Glue
+}
+
+// GetTier returns the clause tier (0=core, 1=mid, 2=local)
+func (c *Clause) GetTier() int {
+	return c.Tier
+}
+
+// String returns string representation of clause with LBD info for learned clauses
 func (c *Clause) String() string {
 	if len(c.Literals) == 0 {
 		return "⊥" // Empty clause (false)
@@ -60,7 +91,15 @@ func (c *Clause) String() string {
 	for i, lit := range c.Literals {
 		parts[i] = lit.String()
 	}
-	return "(" + strings.Join(parts, " ∨ ") + ")"
+
+	result := "(" + strings.Join(parts, " ∨ ") + ")"
+
+	// Add LBD info for learned clauses
+	if c.Learned && c.LBD > 0 {
+		result += fmt.Sprintf(" [LBD:%d,T:%d]", c.LBD, c.Tier)
+	}
+
+	return result
 }
 
 // IsUnit returns true if clause has exactly one literal
@@ -216,7 +255,7 @@ type SolverResult struct {
 	Error       error
 }
 
-// SolverStatistics tracks solver performance metrics
+// SolverStatistics tracks solver performance metrics with LBD support
 type SolverStatistics struct {
 	Decisions      int64 // Number of decision variables chosen
 	Propagations   int64 // Number of unit propagations
@@ -225,12 +264,38 @@ type SolverStatistics struct {
 	LearnedClauses int64 // Number of clauses learned
 	DeletedClauses int64 // Number of clauses deleted
 	TimeElapsed    int64 // Solving time in nanoseconds
+
+	// LBD-related statistics
+	GlueClauses     int64         // Number of glue clauses (LBD <= 2)
+	AvgLBD          float64       // Average LBD of learned clauses
+	LBDDistribution map[int]int64 // Distribution of LBD values
 }
 
-// String returns formatted statistics
+// String returns formatted statistics with LBD information
 func (s SolverStatistics) String() string {
+	if s.LearnedClauses > 0 {
+		return fmt.Sprintf(
+			"Decisions: %d, Propagations: %d, Conflicts: %d, Restarts: %d, Learned: %d, Glue: %d, AvgLBD: %.2f",
+			s.Decisions, s.Propagations, s.Conflicts, s.Restarts, s.LearnedClauses, s.GlueClauses, s.AvgLBD,
+		)
+	}
 	return fmt.Sprintf(
 		"Decisions: %d, Propagations: %d, Conflicts: %d, Restarts: %d, Learned: %d",
 		s.Decisions, s.Propagations, s.Conflicts, s.Restarts, s.LearnedClauses,
 	)
+}
+
+// GetLBDDistribution returns a formatted string of LBD distribution
+func (s SolverStatistics) GetLBDDistribution() string {
+	if len(s.LBDDistribution) == 0 {
+		return "No LBD data"
+	}
+
+	parts := make([]string, 0, len(s.LBDDistribution))
+	for lbd := 1; lbd <= 10; lbd++ {
+		if count, exists := s.LBDDistribution[lbd]; exists && count > 0 {
+			parts = append(parts, fmt.Sprintf("LBD%d: %d", lbd, count))
+		}
+	}
+	return strings.Join(parts, ", ")
 }

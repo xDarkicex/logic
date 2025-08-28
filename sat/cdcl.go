@@ -50,6 +50,10 @@ type CDCLSolver struct {
 	conflictLimit    int64
 	propagationQueue []Literal
 	queueHead        int
+
+	// LBD tracking
+	lbdSum          int64 // Sum of all LBDs for average tracking
+	glueClauseCount int64 // Count of glue clauses (LBD <= 2)
 }
 
 // WatchedClause represents a clause with two-watched literals
@@ -75,7 +79,9 @@ type CDCLConfig struct {
 // NewCDCLSolver creates a new unified CDCL solver with advanced configuration by default
 func NewCDCLSolver() *CDCLSolver {
 	solver := &CDCLSolver{
-		statistics:       SolverStatistics{},
+		statistics: SolverStatistics{
+			LBDDistribution: make(map[int]int64),
+		},
 		assignment:       make(Assignment),
 		trail:            NewAdvancedDecisionTrail(), // Use advanced trail by default
 		watchLists:       make(map[string][]*WatchedClause),
@@ -92,6 +98,8 @@ func NewCDCLSolver() *CDCLSolver {
 		conflictLimit:    10000000,
 		propagationQueue: make([]Literal, 0),
 		queueHead:        0,
+		lbdSum:           0,
+		glueClauseCount:  0,
 	}
 
 	// Initialize advanced components by default
@@ -157,9 +165,11 @@ func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverRe
 	c.startTime = time.Now()
 	c.cnf = cnf
 	c.assignment = make(Assignment)
-	c.statistics = SolverStatistics{}
+	c.statistics = SolverStatistics{LBDDistribution: make(map[int]int64)}
 	c.decisionLevel = 0
 	c.conflicts = 0
+	c.lbdSum = 0
+	c.glueClauseCount = 0
 
 	// Initialize components
 	c.initializeWatchLists()
@@ -392,14 +402,31 @@ func (c *CDCLSolver) learnClause(clause *Clause) {
 	c.cnf.nextID++
 	c.clauseActivity[clause.ID] = 1.0
 
+	// Track LBD statistics
+	c.lbdSum += int64(clause.LBD)
+	if clause.Glue {
+		c.glueClauseCount++
+		c.statistics.GlueClauses = c.glueClauseCount
+	}
+
+	// Update LBD distribution
+	c.statistics.LBDDistribution[clause.LBD]++
+
+	// Update average LBD
+	if c.statistics.LearnedClauses > 0 {
+		c.statistics.AvgLBD = float64(c.lbdSum) / float64(c.statistics.LearnedClauses)
+	}
+
 	c.learnedClauses = append(c.learnedClauses, clause)
 
-	// Add to watch lists
+	// Add to watch lists with LBD-aware blocking literal selection
 	if len(clause.Literals) >= 2 {
 		wc := &WatchedClause{
 			Clause: clause,
 			Watch1: 0,
 			Watch2: 1,
+			// Set blocker to highest level literal for better performance
+			Blocker: c.selectBestBlocker(clause),
 		}
 
 		var1 := clause.Literals[0].Variable
@@ -410,9 +437,10 @@ func (c *CDCLSolver) learnClause(clause *Clause) {
 	} else if len(clause.Literals) == 1 {
 		// Unit clause
 		wc := &WatchedClause{
-			Clause: clause,
-			Watch1: 0,
-			Watch2: -1,
+			Clause:  clause,
+			Watch1:  0,
+			Watch2:  -1,
+			Blocker: clause.Literals[0],
 		}
 		variable := clause.Literals[0].Variable
 		c.watchLists[variable] = append(c.watchLists[variable], wc)
@@ -422,6 +450,27 @@ func (c *CDCLSolver) learnClause(clause *Clause) {
 	for _, lit := range clause.Literals {
 		c.bumpVariableActivity(lit.Variable)
 	}
+}
+
+// selectBestBlocker selects the best blocking literal based on decision level
+func (c *CDCLSolver) selectBestBlocker(clause *Clause) Literal {
+	if len(clause.Literals) == 0 {
+		return Literal{}
+	}
+
+	// Select literal from highest decision level as blocker
+	bestLit := clause.Literals[0]
+	bestLevel := c.trail.GetLevel(bestLit.Variable)
+
+	for _, lit := range clause.Literals[1:] {
+		level := c.trail.GetLevel(lit.Variable)
+		if level > bestLevel {
+			bestLevel = level
+			bestLit = lit
+		}
+	}
+
+	return bestLit
 }
 
 func (c *CDCLSolver) allVariablesAssigned() bool {
@@ -616,7 +665,7 @@ func (c *CDCLSolver) GetStatistics() SolverStatistics {
 }
 
 func (c *CDCLSolver) Reset() {
-	c.statistics = SolverStatistics{}
+	c.statistics = SolverStatistics{LBDDistribution: make(map[int]int64)}
 	c.assignment = make(Assignment)
 	c.trail.Clear()
 	c.watchLists = make(map[string][]*WatchedClause)
@@ -626,6 +675,8 @@ func (c *CDCLSolver) Reset() {
 	c.conflicts = 0
 	c.propagationQueue = make([]Literal, 0)
 	c.queueHead = 0
+	c.lbdSum = 0
+	c.glueClauseCount = 0
 
 	// Reset components
 	if c.heuristic != nil {

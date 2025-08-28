@@ -14,10 +14,14 @@ type FirstUIPAnalyzer struct {
 	conflictSide    []string
 	resolutionStack []ResolutionStep
 
+	// LBD computation support
+	levelsSeen map[int]bool
+
 	// Performance counters
-	resolutions    int64
-	trivialClauses int64
-	unitClauses    int64
+	resolutions     int64
+	trivialClauses  int64
+	unitClauses     int64
+	glueClauseCount int64
 }
 
 // ResolutionStep tracks each step in the resolution process for debugging
@@ -33,6 +37,7 @@ func NewFirstUIPAnalyzer() *FirstUIPAnalyzer {
 		seen:            make(map[string]bool),
 		conflictSide:    make([]string, 0),
 		resolutionStack: make([]ResolutionStep, 0),
+		levelsSeen:      make(map[int]bool),
 	}
 }
 
@@ -40,7 +45,7 @@ func (f *FirstUIPAnalyzer) Name() string {
 	return "FirstUIP-Advanced"
 }
 
-// Analyze performs sophisticated conflict analysis using First-UIP with optimizations
+// Analyze performs sophisticated conflict analysis using First-UIP with LBD computation
 func (f *FirstUIPAnalyzer) Analyze(conflictClause *Clause, trail DecisionTrail) (*Clause, int) {
 	if conflictClause == nil {
 		return nil, 0
@@ -51,16 +56,22 @@ func (f *FirstUIPAnalyzer) Analyze(conflictClause *Clause, trail DecisionTrail) 
 		return nil, 0 // Root level conflict - formula is UNSAT
 	}
 
-	// Reset analysis state
+	// Reset analysis state including LBD tracking
 	f.reset()
 
 	// Initialize with conflict clause
 	learntClause := make([]Literal, 0, len(conflictClause.Literals))
 
-	// Add all literals from conflict clause to learnt clause
+	// Add all literals from conflict clause and track levels
 	for _, lit := range conflictClause.Literals {
 		learntClause = append(learntClause, lit.Negate())
 		f.seen[lit.Variable] = true
+
+		// Track decision levels for LBD computation
+		level := trail.GetLevel(lit.Variable)
+		if level >= 0 {
+			f.levelsSeen[level] = true
+		}
 	}
 
 	// Track variables at current decision level
@@ -74,7 +85,8 @@ func (f *FirstUIPAnalyzer) Analyze(conflictClause *Clause, trail DecisionTrail) 
 	// If we already have exactly one variable at current level, we're done
 	if currentLevelVars == 1 {
 		f.unitClauses++
-		return f.buildLearnedClause(learntClause, trail), f.computeBacktrackLevel(learntClause, trail, currentLevel)
+		finalClause := f.buildLearnedClauseWithLBD(learntClause, trail)
+		return finalClause, f.computeBacktrackLevel(learntClause, trail, currentLevel)
 	}
 
 	// Get trail entries at current level for resolution
@@ -97,12 +109,12 @@ func (f *FirstUIPAnalyzer) Analyze(conflictClause *Clause, trail DecisionTrail) 
 			break
 		}
 
-		// Perform resolution step
+		// Perform resolution step with LBD tracking
 		f.resolutions++
 		oldClause := make([]Literal, len(learntClause))
 		copy(oldClause, learntClause)
 
-		learntClause = f.resolve(learntClause, reason, resolveVar, trail, currentLevel)
+		learntClause = f.resolveWithLBDTracking(learntClause, reason, resolveVar, trail)
 
 		// Track resolution step for debugging
 		f.resolutionStack = append(f.resolutionStack, ResolutionStep{
@@ -122,20 +134,23 @@ func (f *FirstUIPAnalyzer) Analyze(conflictClause *Clause, trail DecisionTrail) 
 		}
 	}
 
-	// Build final learned clause
-	finalClause := f.buildLearnedClause(learntClause, trail)
+	// Build final learned clause with LBD
+	finalClause := f.buildLearnedClauseWithLBD(learntClause, trail)
 	backtrackLevel := f.computeBacktrackLevel(learntClause, trail, currentLevel)
 
 	// Update statistics
 	if len(finalClause.Literals) == 1 {
 		f.unitClauses++
 	}
+	if finalClause.Glue {
+		f.glueClauseCount++
+	}
 
 	return finalClause, backtrackLevel
 }
 
-// resolve performs resolution between current learnt clause and reason clause
-func (f *FirstUIPAnalyzer) resolve(learntClause []Literal, reasonClause *Clause, resolveVar string, trail DecisionTrail, currentLevel int) []Literal {
+// resolveWithLBDTracking performs resolution between current learnt clause and reason clause with LBD tracking
+func (f *FirstUIPAnalyzer) resolveWithLBDTracking(learntClause []Literal, reasonClause *Clause, resolveVar string, trail DecisionTrail) []Literal {
 	newClause := make([]Literal, 0)
 
 	// Add literals from learnt clause (except resolved variable)
@@ -150,6 +165,12 @@ func (f *FirstUIPAnalyzer) resolve(learntClause []Literal, reasonClause *Clause,
 		if lit.Variable != resolveVar && !f.containsVariable(newClause, lit.Variable) {
 			newClause = append(newClause, lit)
 			f.seen[lit.Variable] = true
+
+			// Track decision level for LBD computation
+			level := trail.GetLevel(lit.Variable)
+			if level >= 0 {
+				f.levelsSeen[level] = true
+			}
 		}
 	}
 
@@ -222,17 +243,24 @@ func (f *FirstUIPAnalyzer) countCurrentLevelVars(clause []Literal, trail Decisio
 	return count
 }
 
-// buildLearnedClause creates final learned clause with optimizations
-func (f *FirstUIPAnalyzer) buildLearnedClause(literals []Literal, trail DecisionTrail) *Clause {
+// buildLearnedClauseWithLBD creates final learned clause with LBD computation
+func (f *FirstUIPAnalyzer) buildLearnedClauseWithLBD(literals []Literal, trail DecisionTrail) *Clause {
 	// Remove duplicates and optimize
 	seen := make(map[string]bool)
 	uniqueLiterals := make([]Literal, 0, len(literals))
+	levelSet := make(map[int]bool)
 
 	for _, lit := range literals {
 		key := f.literalKey(lit)
 		if !seen[key] {
 			seen[key] = true
 			uniqueLiterals = append(uniqueLiterals, lit)
+
+			// Track levels for final LBD computation
+			level := trail.GetLevel(lit.Variable)
+			if level >= 0 {
+				levelSet[level] = true
+			}
 		}
 	}
 
@@ -243,9 +271,14 @@ func (f *FirstUIPAnalyzer) buildLearnedClause(literals []Literal, trail Decision
 		return levelI > levelJ // Higher level first
 	})
 
+	// Create clause with LBD information
 	clause := NewClause(uniqueLiterals...)
 	clause.Learned = true
-	clause.Activity = 1.0 // Initial activity
+	clause.Activity = 1.0
+
+	// Compute and set LBD
+	lbd := len(levelSet)
+	clause.SetLBD(lbd)
 
 	return clause
 }
@@ -296,6 +329,7 @@ func (f *FirstUIPAnalyzer) reset() {
 	f.seen = make(map[string]bool)
 	f.conflictSide = f.conflictSide[:0]
 	f.resolutionStack = f.resolutionStack[:0]
+	f.levelsSeen = make(map[int]bool)
 }
 
 func (f *FirstUIPAnalyzer) containsVariable(literals []Literal, variable string) bool {
@@ -319,13 +353,15 @@ func (f *FirstUIPAnalyzer) Reset() {
 	f.resolutions = 0
 	f.trivialClauses = 0
 	f.unitClauses = 0
+	f.glueClauseCount = 0
 }
 
 // GetStatistics returns analysis statistics for debugging
 func (f *FirstUIPAnalyzer) GetStatistics() map[string]int64 {
 	return map[string]int64{
-		"resolutions":    f.resolutions,
-		"trivialClauses": f.trivialClauses,
-		"unitClauses":    f.unitClauses,
+		"resolutions":     f.resolutions,
+		"trivialClauses":  f.trivialClauses,
+		"unitClauses":     f.unitClauses,
+		"glueClauseCount": f.glueClauseCount,
 	}
 }
