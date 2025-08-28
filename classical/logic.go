@@ -1,4 +1,4 @@
-// Package logic provides high-performance boolean logic operations,
+// Package classical provides high-performance boolean logic operations,
 // bitwise manipulation, circuit simulation, truth table generation,
 // and logical expression parsing/evaluation.
 //
@@ -17,7 +17,7 @@
 //	result, err := logic.EvaluateExpression("A & B | !C", map[string]bool{
 //	    "A": true, "B": false, "C": true,
 //	})
-package logic
+package classical
 
 import (
 	"fmt"

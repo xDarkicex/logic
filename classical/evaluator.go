@@ -1,4 +1,4 @@
-package logic
+package classical
 
 // Evaluator provides a fluent interface for chaining logical operations.
 // It maintains an internal boolean state and allows operations to be
