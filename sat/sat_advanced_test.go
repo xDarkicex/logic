@@ -449,3 +449,164 @@ func evaluateClassicalAdvanced(expr string, assignment Assignment) bool {
 	result, err := ast.Evaluate(ctx)
 	return err == nil && result
 }
+
+func TestBoundedVariableElimination(t *testing.T) {
+	t.Run("Basic Variable Elimination", func(t *testing.T) {
+		ve := NewBoundedVariableElimination()
+		cnf := NewCNF()
+
+		// Create a simple case: (A ∨ B) ∧ (¬A ∨ C) ∧ (D)
+		// Variable A can be eliminated by resolution: (B ∨ C) ∧ (D)
+		cnf.AddClause(NewClause(
+			Literal{Variable: "A", Negated: false},
+			Literal{Variable: "B", Negated: false},
+		))
+		cnf.AddClause(NewClause(
+			Literal{Variable: "A", Negated: true},
+			Literal{Variable: "C", Negated: false},
+		))
+		cnf.AddClause(NewClause(
+			Literal{Variable: "D", Negated: false},
+		))
+
+		originalClauses := len(cnf.Clauses)
+		assignment := make(Assignment)
+
+		eliminated := ve.EliminateVariables(cnf, assignment)
+
+		if eliminated == 0 {
+			t.Error("Expected at least one variable to be eliminated")
+		}
+
+		// Should have fewer or equal clauses after elimination
+		if len(cnf.Clauses) > originalClauses {
+			t.Errorf("Clauses increased from %d to %d", originalClauses, len(cnf.Clauses))
+		}
+
+		// Variable A should no longer appear in any clause
+		for _, clause := range cnf.Clauses {
+			for _, lit := range clause.Literals {
+				if lit.Variable == "A" {
+					t.Error("Variable A should have been eliminated")
+				}
+			}
+		}
+
+		t.Logf("Eliminated %d variables, clauses: %d -> %d",
+			eliminated, originalClauses, len(cnf.Clauses))
+
+		stats := ve.GetStatistics()
+		for key, value := range stats {
+			t.Logf("%s: %d", key, value)
+		}
+	})
+
+	t.Run("Cost Threshold Limiting", func(t *testing.T) {
+		ve := NewBoundedVariableEliminationWithConfig(10, 5, 0.5) // Very low threshold
+		cnf := NewCNF()
+
+		// Create a case where elimination would be expensive
+		for i := 0; i < 5; i++ {
+			cnf.AddClause(NewClause(
+				Literal{Variable: "X", Negated: false},
+				Literal{Variable: fmt.Sprintf("B%d", i), Negated: false},
+			))
+		}
+		for i := 0; i < 5; i++ {
+			cnf.AddClause(NewClause(
+				Literal{Variable: "X", Negated: true},
+				Literal{Variable: fmt.Sprintf("C%d", i), Negated: false},
+			))
+		}
+
+		assignment := make(Assignment)
+		eliminated := ve.EliminateVariables(cnf, assignment)
+
+		// Should eliminate fewer variables due to cost threshold
+		t.Logf("Eliminated %d variables with low cost threshold", eliminated)
+
+		stats := ve.GetStatistics()
+		if stats["skippedVariables"] == 0 {
+			t.Error("Expected some variables to be skipped due to cost")
+		}
+	})
+
+	t.Run("Pure Variable Elimination", func(t *testing.T) {
+		ve := NewBoundedVariableElimination()
+		cnf := NewCNF()
+
+		// Create pure variables (appear only in positive or negative form)
+		cnf.AddClause(NewClause(
+			Literal{Variable: "Pure1", Negated: false}, // Only positive
+			Literal{Variable: "A", Negated: false},
+		))
+		cnf.AddClause(NewClause(
+			Literal{Variable: "Pure2", Negated: true}, // Only negative
+			Literal{Variable: "B", Negated: false},
+		))
+		cnf.AddClause(NewClause(
+			Literal{Variable: "Mixed", Negated: false}, // Mixed
+		))
+		cnf.AddClause(NewClause(
+			Literal{Variable: "Mixed", Negated: true}, // Mixed
+			Literal{Variable: "C", Negated: false},
+		))
+
+		originalClauses := len(cnf.Clauses)
+		assignment := make(Assignment)
+
+		eliminated := ve.EliminateVariables(cnf, assignment)
+
+		t.Logf("Pure variable elimination: %d variables, %d -> %d clauses",
+			eliminated, originalClauses, len(cnf.Clauses))
+
+		// Should have eliminated pure variables and reduced clause count
+		if len(cnf.Clauses) >= originalClauses {
+			t.Error("Expected clause reduction from pure variable elimination")
+		}
+	})
+}
+
+func TestInprocessorWithVariableElimination(t *testing.T) {
+	t.Run("Integration Test", func(t *testing.T) {
+		inprocessor := NewModernInprocessor()
+		cnf := NewCNF()
+
+		// Create a formula suitable for various inprocessing techniques
+		cnf.AddClause(NewClause(
+			Literal{Variable: "A", Negated: false},
+			Literal{Variable: "B", Negated: false},
+		))
+		cnf.AddClause(NewClause(
+			Literal{Variable: "A", Negated: true},
+			Literal{Variable: "C", Negated: false},
+		))
+		cnf.AddClause(NewClause(
+			Literal{Variable: "B", Negated: false}, // Subsumed by first clause
+		))
+		cnf.AddClause(NewClause(
+			Literal{Variable: "D", Negated: false}, // Pure variable
+			Literal{Variable: "E", Negated: false},
+		))
+
+		originalClauses := len(cnf.Clauses)
+		originalVars := len(cnf.Variables)
+		assignment := make(Assignment)
+
+		result, err := inprocessor.Inprocess(cnf, assignment, 0)
+		if err != nil {
+			t.Fatalf("Inprocessing error: %v", err)
+		}
+
+		t.Logf("Inprocessing result: %+v", result)
+		t.Logf("Clauses: %d -> %d, Variables: %d -> %d",
+			originalClauses, len(cnf.Clauses), originalVars, len(cnf.Variables))
+
+		if !result.FormulaReduced {
+			t.Error("Expected formula to be reduced by inprocessing")
+		}
+
+		stats := inprocessor.GetStatistics()
+		t.Logf("Inprocessor statistics: %+v", stats)
+	})
+}

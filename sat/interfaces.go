@@ -152,3 +152,21 @@ type DecisionTrail interface {
 	// Clear resets trail
 	Clear()
 }
+
+// Inprocessor performs continuous simplification during search
+type Inprocessor interface {
+	// Main inprocessing entry point
+	Inprocess(cnf *CNF, assignment Assignment, level int) (*InprocessResult, error)
+
+	// Individual technique interfaces
+	VivifyClauses(clauses []*Clause, assignment Assignment) int
+	EliminateVariables(variables []string, cnf *CNF) int
+	ProbeFailedLiterals(literals []Literal, cnf *CNF) []Literal
+	SubsumeAndStrengthen(cnf *CNF) int
+
+	// Configuration and lifecycle
+	Configure(config InprocessConfig)
+	GetStatistics() InprocessStatistics
+	Reset()
+	Name() string
+}

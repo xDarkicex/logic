@@ -255,7 +255,7 @@ type SolverResult struct {
 	Error       error
 }
 
-// SolverStatistics tracks solver performance metrics with LBD support
+// SolverStatistics tracks solver performance metrics with LBD and inprocessing support
 type SolverStatistics struct {
 	Decisions      int64 // Number of decision variables chosen
 	Propagations   int64 // Number of unit propagations
@@ -269,20 +269,37 @@ type SolverStatistics struct {
 	GlueClauses     int64         // Number of glue clauses (LBD <= 2)
 	AvgLBD          float64       // Average LBD of learned clauses
 	LBDDistribution map[int]int64 // Distribution of LBD values
+
+	// Inprocessing statistics
+	InprocessRuns          int64 // Number of inprocessing runs
+	ClausesReduced         int64 // Total clauses removed by inprocessing
+	VariablesEliminated    int64 // Total variables eliminated by inprocessing
+	InprocessingTime       int64 // Total time spent in inprocessing (nanoseconds)
+	FormulaSimplifications int64 // Number of times formula was significantly simplified
 }
 
-// String returns formatted statistics with LBD information
+// String returns formatted statistics with inprocessing information
 func (s SolverStatistics) String() string {
+	base := ""
 	if s.LearnedClauses > 0 {
-		return fmt.Sprintf(
+		base = fmt.Sprintf(
 			"Decisions: %d, Propagations: %d, Conflicts: %d, Restarts: %d, Learned: %d, Glue: %d, AvgLBD: %.2f",
 			s.Decisions, s.Propagations, s.Conflicts, s.Restarts, s.LearnedClauses, s.GlueClauses, s.AvgLBD,
 		)
+	} else {
+		base = fmt.Sprintf(
+			"Decisions: %d, Propagations: %d, Conflicts: %d, Restarts: %d, Learned: %d",
+			s.Decisions, s.Propagations, s.Conflicts, s.Restarts, s.LearnedClauses,
+		)
 	}
-	return fmt.Sprintf(
-		"Decisions: %d, Propagations: %d, Conflicts: %d, Restarts: %d, Learned: %d",
-		s.Decisions, s.Propagations, s.Conflicts, s.Restarts, s.LearnedClauses,
-	)
+
+	// Add inprocessing info if used
+	if s.InprocessRuns > 0 {
+		base += fmt.Sprintf(", Inprocess: %d runs, %d clauses reduced, %d vars eliminated",
+			s.InprocessRuns, s.ClausesReduced, s.VariablesEliminated)
+	}
+
+	return base
 }
 
 // GetLBDDistribution returns a formatted string of LBD distribution
@@ -298,4 +315,83 @@ func (s SolverStatistics) GetLBDDistribution() string {
 		}
 	}
 	return strings.Join(parts, ", ")
+}
+
+// Inprocess types and funcs
+
+// InprocessResult represents the result of inprocessing operations
+type InprocessResult struct {
+	ClausesRemoved       int
+	ClausesStrengthened  int
+	VariablesEliminated  int
+	UnitsLearned         int
+	FormulaReduced       bool
+	SubsumptionsFound    int
+	VivificationsApplied int
+	FailedLiteralsFound  int
+}
+
+// InprocessConfig holds configuration for inprocessing techniques
+type InprocessConfig struct {
+	EnableVivification     bool
+	EnableSubsumption      bool
+	EnableVariableElim     bool
+	EnableFailedLitProbing bool
+	EnableInitialInprocess bool // Run inprocessing at start
+
+	VivificationMaxSize  int
+	VarElimMaxResolvent  int
+	ProbingMaxCandidates int
+	InprocessGap         int64
+
+	// Integration parameters
+	InprocessAfterRestarts     int   // Run every N restarts
+	InprocessMinLearnedClauses int64 // Minimum learned clauses before inprocessing
+	AdaptiveGap                bool  // Enable adaptive gap adjustment
+
+	// Resource limits
+	MaxVivificationTries int
+	MaxSubsumptionRounds int
+	MaxProbingDepth      int
+	MaxInprocessTime     int64 // Maximum time per inprocessing round (nanoseconds)
+}
+
+// InprocessStatistics tracks inprocessing performance
+type InprocessStatistics struct {
+	InprocessRuns          int64
+	ClausesVivified        int64
+	ClausesSubsumed        int64
+	VariablesEliminated    int64
+	FailedLiteralsFound    int64
+	TimeInVivification     int64
+	TimeInSubsumption      int64
+	TimeInVariableElim     int64
+	TimeInFailedLitProbing int64
+	TotalInprocessTime     int64
+}
+
+// DefaultInprocessConfig returns sensible defaults with integration parameters
+func DefaultInprocessConfig() InprocessConfig {
+	return InprocessConfig{
+		EnableVivification:     true,
+		EnableSubsumption:      true,
+		EnableVariableElim:     true,
+		EnableFailedLitProbing: false, // More expensive, disabled by default
+		EnableInitialInprocess: false, // Usually not needed
+
+		VivificationMaxSize:  20,
+		VarElimMaxResolvent:  16,
+		ProbingMaxCandidates: 100,
+		InprocessGap:         4000,
+
+		// Integration parameters
+		InprocessAfterRestarts:     3,    // Every 3 restarts
+		InprocessMinLearnedClauses: 100,  // Minimum learned clauses
+		AdaptiveGap:                true, // Enable adaptive adjustment
+
+		MaxVivificationTries: 3,
+		MaxSubsumptionRounds: 2,
+		MaxProbingDepth:      10,
+		MaxInprocessTime:     2e9, // 2 seconds maximum per round
+	}
 }

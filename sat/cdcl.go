@@ -61,6 +61,12 @@ type CDCLSolver struct {
 
 	// Additional performance optimizations
 	propagationCache map[string]bool // Cache for propagation state
+
+	// Inprocessor
+	inprocessor     Inprocessor
+	inprocessConfig InprocessConfig
+	lastInprocess   int64
+	inprocessGap    int64
 }
 
 // WatchedClause represents a clause with two-watched literals
@@ -110,6 +116,10 @@ func NewCDCLSolver() *CDCLSolver {
 		unassignedCache:  make([]string, 0),
 		cacheValid:       false,
 		propagationCache: make(map[string]bool),
+		// Inprocessing initialization
+		inprocessConfig: DefaultInprocessConfig(),
+		lastInprocess:   0,
+		inprocessGap:    4000,
 	}
 
 	// Initialize enhanced components by default (now the base versions include all enhancements)
@@ -118,6 +128,7 @@ func NewCDCLSolver() *CDCLSolver {
 	solver.deletionPolicy = NewActivityBasedDeletion() // Now LBD-aware
 	solver.analyzer = NewFirstUIPAnalyzer()
 	solver.preprocessor = NewSATPreprocessor()
+	solver.inprocessor = NewModernInprocessor()
 
 	return solver
 }
@@ -170,7 +181,7 @@ func (c *CDCLSolver) Solve(cnf *CNF) *SolverResult {
 	return c.SolveWithTimeout(cnf, 0)
 }
 
-// SolveWithTimeout solves with timeout using advanced CDCL algorithm
+// SolveWithTimeout solves with timeout using advanced CDCL algorithm with inprocessing
 func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverResult {
 	c.startTime = time.Now()
 	c.cnf = cnf
@@ -188,13 +199,18 @@ func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverRe
 	c.initializeWatchLists()
 	c.initializeHeuristics()
 
+	// Initial inprocessing at the start (if enabled)
+	if c.inprocessor != nil && c.inprocessConfig.EnableInitialInprocess {
+		c.performInprocessing()
+	}
+
 	// Setup timeout
 	var timeoutChan <-chan time.Time
 	if timeout > 0 {
 		timeoutChan = time.After(timeout)
 	}
 
-	// Main CDCL loop with advanced propagation
+	// Main CDCL loop with inprocessing integration
 	for c.conflicts < c.conflictLimit {
 		select {
 		case <-timeoutChan:
@@ -203,6 +219,12 @@ func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverRe
 				Statistics: c.statistics,
 			}
 		default:
+		}
+
+		// **INPROCESSING INTEGRATION POINT 1**:
+		// Run inprocessing at decision level 0 based on conflict intervals
+		if c.shouldRunInprocessing() {
+			c.performInprocessing()
 		}
 
 		// Use advanced two-watched literals propagation
@@ -231,10 +253,22 @@ func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverRe
 			// Update heuristic
 			c.heuristic.Update(conflictClause)
 
+			// **INPROCESSING INTEGRATION POINT 2**:
+			// After backtracking to level 0, consider inprocessing
+			if c.decisionLevel == 0 && c.shouldRunInprocessingAfterBacktrack() {
+				c.performInprocessing()
+			}
+
 			// Check for restart
 			if c.restartStrategy.ShouldRestart(c.statistics) {
 				c.restart()
 				c.statistics.Restarts++
+
+				// **INPROCESSING INTEGRATION POINT 3**:
+				// After restart, we're at level 0 - good time for inprocessing
+				if c.shouldRunInprocessingAfterRestart() {
+					c.performInprocessing()
+				}
 			}
 
 			// Clause deletion
@@ -262,7 +296,6 @@ func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverRe
 
 		c.decisionLevel++
 		c.statistics.Decisions++
-
 		// Use enhanced polarity heuristic
 		polarity := c.choosePolarity(decisionVar)
 		c.assign(decisionVar, polarity, nil)
@@ -271,6 +304,172 @@ func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverRe
 	return &SolverResult{
 		Satisfiable: false,
 		Statistics:  c.statistics,
+	}
+}
+
+// shouldRunInprocessing determines if inprocessing should run based on current state
+func (c *CDCLSolver) shouldRunInprocessing() bool {
+	// Only run at decision level 0 to avoid corrupting the trail
+	if c.decisionLevel != 0 {
+		return false
+	}
+
+	// Don't run too frequently - respect the gap
+	if c.conflicts < c.lastInprocess+c.inprocessGap {
+		return false
+	}
+
+	// Don't run if we haven't learned enough clauses
+	if c.statistics.LearnedClauses < 100 {
+		return false
+	}
+
+	// Adaptive gap based on formula size and progress
+	adaptiveGap := c.calculateAdaptiveInprocessGap()
+	if c.conflicts < c.lastInprocess+adaptiveGap {
+		return false
+	}
+
+	// Run if we have accumulated enough conflicts or learned clauses
+	return c.conflicts >= c.lastInprocess+c.inprocessGap ||
+		c.statistics.LearnedClauses >= c.lastInprocess+c.inprocessGap/2
+}
+
+// shouldRunInprocessingAfterBacktrack checks if inprocessing should run after backtracking to level 0
+func (c *CDCLSolver) shouldRunInprocessingAfterBacktrack() bool {
+	// More conservative - only after significant conflict activity
+	return c.conflicts > c.lastInprocess+c.inprocessGap*2 &&
+		c.statistics.LearnedClauses > 500
+}
+
+// shouldRunInprocessingAfterRestart checks if inprocessing should run after restart
+func (c *CDCLSolver) shouldRunInprocessingAfterRestart() bool {
+	// Run inprocessing every few restarts
+	return c.statistics.Restarts > 0 &&
+		c.statistics.Restarts%3 == 0 &&
+		c.conflicts > c.lastInprocess+c.inprocessGap/2
+}
+
+// calculateAdaptiveInprocessGap computes dynamic inprocessing interval
+func (c *CDCLSolver) calculateAdaptiveInprocessGap() int64 {
+	baseGap := c.inprocessGap
+
+	// Adjust based on formula size
+	if c.cnf != nil {
+		clauseCount := int64(len(c.cnf.Clauses))
+		if clauseCount < 1000 {
+			baseGap = baseGap / 2 // Run more frequently on small formulas
+		} else if clauseCount > 10000 {
+			baseGap = baseGap * 2 // Run less frequently on large formulas
+		}
+	}
+
+	// Adjust based on learning rate
+	if c.statistics.Conflicts > 0 {
+		learningRate := float64(c.statistics.LearnedClauses) / float64(c.statistics.Conflicts)
+		if learningRate > 0.5 {
+			// High learning rate - run more frequently
+			baseGap = int64(float64(baseGap) * 0.8)
+		} else if learningRate < 0.1 {
+			// Low learning rate - run less frequently
+			baseGap = int64(float64(baseGap) * 1.5)
+		}
+	}
+
+	return baseGap
+}
+
+// performInprocessing executes inprocessing and handles state updates
+func (c *CDCLSolver) performInprocessing() {
+	if c.inprocessor == nil {
+		return
+	}
+
+	startTime := time.Now()
+	originalClauses := len(c.cnf.Clauses)
+	originalVars := len(c.cnf.Variables)
+
+	// Perform inprocessing
+	result, err := c.inprocessor.Inprocess(c.cnf, c.assignment, c.decisionLevel)
+	if err != nil {
+		// Log error but don't fail - continue solving
+		return
+	}
+
+	c.lastInprocess = c.conflicts
+
+	// Update statistics
+	c.statistics.InprocessRuns++
+	inprocessTime := time.Since(startTime).Nanoseconds()
+
+	// Handle formula changes
+	if result.FormulaReduced {
+		newClauses := len(c.cnf.Clauses)
+		newVars := len(c.cnf.Variables)
+
+		// Update solver statistics
+		c.statistics.ClausesReduced += int64(originalClauses - newClauses)
+		c.statistics.VariablesEliminated += int64(originalVars - newVars)
+
+		// **CRITICAL**: Rebuild watch lists if clauses were modified
+		if result.ClausesRemoved > 0 || result.ClausesStrengthened > 0 {
+			c.rebuildWatchLists()
+		}
+
+		// Invalidate caches
+		c.cacheValid = false
+
+		// Update heuristic activities for new formula structure
+		c.updateHeuristicsAfterInprocessing(result)
+
+		// Adapt inprocessing frequency based on effectiveness
+		c.adaptInprocessingFrequency(result, inprocessTime)
+	}
+}
+
+// rebuildWatchLists reconstructs watch lists after formula modification
+func (c *CDCLSolver) rebuildWatchLists() {
+	// Clear existing watch lists
+	c.watchLists = make(map[string][]*WatchedClause)
+
+	// Rebuild from current clauses
+	c.initializeWatchLists()
+}
+
+// updateHeuristicsAfterInprocessing updates heuristics based on inprocessing results
+func (c *CDCLSolver) updateHeuristicsAfterInprocessing(result *InprocessResult) {
+	// Re-initialize variable activities for eliminated/modified variables
+	c.initializeHeuristics()
+
+	// Boost activity of variables in strengthened clauses
+	if result.ClausesStrengthened > 0 {
+		for _, clause := range c.cnf.Clauses {
+			if clause.Learned && len(clause.Literals) <= 5 { // Likely strengthened
+				for _, lit := range clause.Literals {
+					c.bumpVariableActivity(lit.Variable)
+				}
+			}
+		}
+	}
+}
+
+// adaptInprocessingFrequency adjusts inprocessing parameters based on effectiveness
+func (c *CDCLSolver) adaptInprocessingFrequency(result *InprocessResult, duration int64) {
+	totalReductions := result.ClausesRemoved + result.ClausesStrengthened + result.VariablesEliminated
+
+	// If inprocessing was very effective, run more frequently
+	if totalReductions > 50 {
+		c.inprocessGap = int64(float64(c.inprocessGap) * 0.8)
+	} else if totalReductions < 5 {
+		// If not very effective, run less frequently
+		c.inprocessGap = int64(float64(c.inprocessGap) * 1.2)
+	}
+
+	// Bounds checking
+	if c.inprocessGap < 1000 {
+		c.inprocessGap = 1000
+	} else if c.inprocessGap > 20000 {
+		c.inprocessGap = 20000
 	}
 }
 
