@@ -4,7 +4,6 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Go Report Card](https://goreportcard.com/badge/github.com/xDarkicex/logic)](https://goreportcard.com/report/github.com/xDarkicex/logic)
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/xDarkicex/logic.svg)](https://pkg.go.dev/github.com/xDarkicex/logic)
-[![CI](https://github.com/xDarkicex/logic/actions/workflows/ci.yml/badge.svg)](https://github.com/xDarkicex/logic/actions)
 
 A production-ready Go library that combines **high-performance boolean logic**, **bitwise manipulation**, **truth-table generation**, and a **modern CDCL SAT solver**. Designed for digital-logic education, formal verification, AI constraint solving, and embedded systems.
 
