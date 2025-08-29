@@ -73,7 +73,6 @@ func (v *VSIDSHeuristic) ChooseVariable(unassigned []string, assignment Assignme
 	// Modern combined scoring
 	bestVar := ""
 	bestScore := -1.0
-
 	for _, variable := range unassigned {
 		score := v.computeModernScore(variable)
 		if score > bestScore {
@@ -81,8 +80,7 @@ func (v *VSIDSHeuristic) ChooseVariable(unassigned []string, assignment Assignme
 			bestVar = variable
 		}
 	}
-
-	return bestVar
+	return bestVar // FIXED: Return bestVar instead of unassigned
 }
 
 // Modern scoring combining VSIDS + LRB + anti-aging
@@ -98,7 +96,6 @@ func (v *VSIDSHeuristic) computeModernScore(variable string) float64 {
 			agingFactor = math.Exp(-float64(age-100) / 1000.0)
 		}
 	}
-
 	return (v.vsidsWeight*vsidsScore + v.lrbWeight*lrbScore) * agingFactor
 }
 
@@ -127,11 +124,59 @@ func (v *VSIDSHeuristic) Update(conflictClause *Clause) {
 		v.participated[lit.Variable] = v.conflictCount
 	}
 
-	// Standard VSIDS decay
-	v.increment /= v.decay
+	// Adaptive VSIDS decay routed through the enhanced decay function
+	v.decayVariableActivities()
+
+	// Keep increment numerically stable
 	if v.increment > 1e100 {
 		v.rescaleActivities()
 	}
+}
+
+// decayVariableActivities applies (possibly adaptive) VSIDS decay to the increment.
+// This is designed to be called from the CDCL loop and within Update for cohesion.
+func (v *VSIDSHeuristic) decayVariableActivities() {
+	// Apply adaptive decay adjustment periodically
+	if v.conflictCount%1000 == 0 && v.conflictCount > 0 {
+		v.adaptDecayRate()
+	}
+
+	// Apply the (possibly adjusted) decay
+	// Map: varActivityInc -> increment, varActivityDecay -> decay
+	v.increment /= v.decay
+}
+
+// adaptDecayRate adapts v.decay based on average activity to stabilize scoring dynamics.
+func (v *VSIDSHeuristic) adaptDecayRate() {
+	avgActivity := v.computeAverageActivity()
+
+	if avgActivity < 0.1 {
+		// Slower decay when activities are low
+		v.decay *= 0.95
+		// Prevent too slow decay (keeps division by decay well-conditioned)
+		if v.decay < 0.8 {
+			v.decay = 0.8
+		}
+	} else if avgActivity > 10.0 {
+		// Faster decay when activities are high
+		v.decay *= 1.05
+		// Prevent too fast decay
+		if v.decay > 0.99 {
+			v.decay = 0.99
+		}
+	}
+}
+
+// computeAverageActivity computes the average variable activity used by adaptDecayRate.
+func (v *VSIDSHeuristic) computeAverageActivity() float64 {
+	if len(v.activity) == 0 {
+		return 0.0
+	}
+	sum := 0.0
+	for _, a := range v.activity {
+		sum += a
+	}
+	return sum / float64(len(v.activity))
 }
 
 // Add polarity method to VSIDSHeuristic
@@ -152,6 +197,8 @@ func (v *VSIDSHeuristic) GetPreferredPolarity(variable string) bool {
 func (v *VSIDSHeuristic) rescaleActivities() {
 	for variable := range v.activity {
 		v.activity[variable] *= 1e-100
+	}
+	for variable := range v.lrbScores {
 		v.lrbScores[variable] *= 1e-100
 	}
 	v.increment *= 1e-100
@@ -164,6 +211,7 @@ func (v *VSIDSHeuristic) Reset() {
 	v.phaseCache = make(map[string]bool)
 	v.participated = make(map[string]int64)
 	v.increment = 1.0
+	v.decay = 0.95
 	v.conflictCount = 0
 }
 
@@ -272,7 +320,6 @@ func (l *LubyRestartStrategy) ShouldRestart(stats SolverStatistics) bool {
 func (l *LubyRestartStrategy) OnRestart() {
 	l.restartCount++
 	l.index++
-
 	if l.index >= len(l.sequence) {
 		l.extendSequence()
 	}
@@ -291,14 +338,12 @@ func (l *LubyRestartStrategy) OnRestart() {
 func (l *LubyRestartStrategy) computeAverageConflicts() float64 {
 	sum := int64(0)
 	count := 0
-
 	for _, conflicts := range l.glucoseWindow {
 		if conflicts > 0 {
 			sum += conflicts
 			count++
 		}
 	}
-
 	if count == 0 {
 		return 0.0
 	}
@@ -318,7 +363,7 @@ func (l *LubyRestartStrategy) Reset() {
 }
 
 func (l *LubyRestartStrategy) extendSequence() {
-	// Generate more Luby numbers
+	// Generate more Luby numbers by repeating and extending with a power-of-two term
 	current := len(l.sequence)
 	for i := 0; i < current; i++ {
 		l.sequence = append(l.sequence, l.sequence[i])
@@ -326,7 +371,7 @@ func (l *LubyRestartStrategy) extendSequence() {
 	l.sequence = append(l.sequence, int(math.Pow(2, float64(len(l.sequence)))))
 }
 
-// ActivityBasedDeletion - now LBD-aware
+// ActivityBasedDeletion - now LBD + tier-aware
 type ActivityBasedDeletion struct {
 	// Core activity (existing)
 	activityThreshold float64
@@ -334,20 +379,29 @@ type ActivityBasedDeletion struct {
 	// Integrated LBD awareness
 	lbdThreshold  int
 	sizeThreshold int
+
 	deletionCount int64
 	keepRatio     float64
+
+	// Tier-specific controls
+	coreProtection   bool    // never delete core
+	midThreshold     float64 // activity threshold for mid-tier
+	localThreshold   float64 // activity threshold for local-tier
+	recentProtection int64   // recent protection (conflicts), mirrors DB default
 }
 
-// NewActivityBasedDeletion - now LBD-aware by default
+// NewActivityBasedDeletion - defaults tuned for tiering
 func NewActivityBasedDeletion() *ActivityBasedDeletion {
 	return &ActivityBasedDeletion{
 		activityThreshold: 0.1,
-
-		// LBD features enabled by default
-		lbdThreshold:  4,
-		sizeThreshold: 30,
-		deletionCount: 0,
-		keepRatio:     0.5,
+		lbdThreshold:      4,
+		sizeThreshold:     30,
+		deletionCount:     0,
+		keepRatio:         0.5,
+		coreProtection:    true,
+		midThreshold:      0.15, // slightly higher than base activity
+		localThreshold:    0.10, // align with base activity threshold
+		recentProtection:  1000, // match DB default
 	}
 }
 
@@ -355,40 +409,82 @@ func (a *ActivityBasedDeletion) Name() string {
 	return "Activity-LBD-Enhanced"
 }
 
-// Enhanced ShouldDelete with LBD awareness
+// Enhanced ShouldDelete with tier awareness - delegates to ShouldDeleteFromTier
 func (a *ActivityBasedDeletion) ShouldDelete(clause *Clause, stats SolverStatistics) bool {
-	if !clause.Learned {
-		return false // Never delete original clauses
-	}
+	return a.ShouldDeleteFromTier(clause, clause.Tier, stats)
+}
 
-	// Never delete unit clauses
-	if len(clause.Literals) <= 1 {
+// ShouldDeleteFromTier applies tier-specific strategies
+func (a *ActivityBasedDeletion) ShouldDeleteFromTier(clause *Clause, tier int, stats SolverStatistics) bool {
+	// Never delete original or unit clauses
+	if !clause.Learned || len(clause.Literals) <= 1 {
 		return false
 	}
 
-	// Never delete glue clauses (LBD <= 2)
-	if clause.Glue || clause.LBD <= a.lbdThreshold {
+	// Core protection or glue/LBD<=2
+	if a.coreProtection || clause.Glue || clause.LBD <= 2 || tier == 0 {
 		return false
 	}
 
-	// Keep core tier clauses (LBD <= 2)
-	if clause.Tier == 0 {
+	// Mid-tier (LBD 3-6): careful, activity-based
+	if tier == 1 {
+		thr := a.midThreshold
+		// be a bit less aggressive than plain activity threshold
+		if clause.Activity < thr {
+			return true
+		}
 		return false
 	}
 
-	// For mid-tier clauses (LBD 3-6), use activity
-	if clause.Tier == 1 {
-		return clause.Activity < a.activityThreshold*1.5 // Be less aggressive
+	// Local tier (LBD > 6): aggressive
+	if tier == 2 {
+		// Delete if low activity or too large
+		if clause.Activity < a.localThreshold || len(clause.Literals) > a.sizeThreshold {
+			return true
+		}
+		// Fallback to generic activity
+		return clause.Activity < a.activityThreshold
 	}
 
-	// For local clauses (LBD > 6), delete more aggressively
-	if clause.Tier == 2 {
-		// Delete if low activity OR too large
-		return clause.Activity < a.activityThreshold || len(clause.Literals) > a.sizeThreshold
-	}
-
-	// Fallback to activity-based deletion
+	// Default fallback
 	return clause.Activity < a.activityThreshold
+}
+
+// GetDeletionCandidates selects candidates by tiers to reduce DB to its maxSize.
+// Priority: Local (aggressive) -> Mid (careful), skip Core and protected Recent.
+func (a *ActivityBasedDeletion) GetDeletionCandidates(db *ClauseDatabase, stats SolverStatistics) []*Clause {
+	need := db.Size() - db.maxSize
+	if need <= 0 {
+		return nil
+	}
+
+	var out []*Clause
+
+	// Helper to pick from a tier with ShouldDeleteFromTier
+	pick := func(tierClauses []*Clause, tier int) {
+		for _, cl := range tierClauses {
+			if need == 0 {
+				return
+			}
+			if a.ShouldDeleteFromTier(cl, tier, stats) {
+				out = append(out, cl)
+				need--
+			}
+		}
+	}
+
+	// Prefer local, then mid
+	_, mid, local, recent := db.GetTierSlices()
+	// Skip protected recent by checking bornAt; only promote handles migration out of recent
+	_ = recent // kept for completeness; we don't delete from recent directly here
+
+	pick(local, 2)
+	if need > 0 {
+		pick(mid, 1)
+	}
+
+	// Never pick core
+	return out
 }
 
 // Enhanced Update method with LBD statistics
@@ -421,23 +517,42 @@ func (a *ActivityBasedDeletion) Update(clauses []*Clause) {
 		// Adapt LBD threshold based on distribution
 		avgLBD := float64(lbdSum) / float64(clauseCount)
 		if avgLBD < 4.0 {
-			a.lbdThreshold = 3 // Be more selective when clauses are high quality
+			// Be more selective when clauses are high quality
+			a.lbdThreshold = 3
 		} else {
-			a.lbdThreshold = 4 // Standard threshold
+			// Standard threshold
+			a.lbdThreshold = 4
 		}
 	}
 
 	// Adapt parameters based on performance
 	a.deletionCount++
 	if a.deletionCount%100 == 0 {
-		// Adjust thresholds based on clause quality distribution
-		glueRatio := float64(lbdCounts[1]+lbdCounts[2]) / float64(clauseCount)
+		// Adjust keep ratio based on clause quality distribution
+		// FIXED: Properly sum lbdCounts[1] and lbdCounts[2] as integers
+		glueSum := 0
+		if val, ok := lbdCounts[1]; ok {
+			glueSum += val
+		}
+		if val, ok := lbdCounts[2]; ok {
+			glueSum += val
+		}
+
+		glueRatio := float64(glueSum) / float64(max(1, clauseCount))
 		if glueRatio > 0.3 {
 			// High quality clauses - be more conservative
-			a.keepRatio = math.Max(0.4, a.keepRatio*1.01)
+			if a.keepRatio < 0.4 {
+				a.keepRatio = 0.4
+			} else {
+				a.keepRatio *= 1.01
+			}
 		} else {
 			// Lower quality clauses - be more aggressive
-			a.keepRatio = math.Max(0.3, a.keepRatio*0.99)
+			if a.keepRatio < 0.3 {
+				a.keepRatio = 0.3
+			} else {
+				a.keepRatio *= 0.99
+			}
 		}
 	}
 }
@@ -464,4 +579,12 @@ func NewAdaptiveRestartStrategy() *LubyRestartStrategy {
 // NewAdvancedClauseDeletion creates enhanced clause deletion (same as NewActivityBasedDeletion now)
 func NewAdvancedClauseDeletion() *ActivityBasedDeletion {
 	return NewActivityBasedDeletion() // All features are now standard
+}
+
+// helper
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

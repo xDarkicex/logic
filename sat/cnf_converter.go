@@ -42,7 +42,6 @@ func (c *CNFConverter) ConvertExpression(expr string) (*CNF, error) {
 	// Add unit clause to ensure root is true
 	rootLiteral := Literal{Variable: rootVar, Negated: false}
 	c.cnf.AddClause(NewClause(rootLiteral))
-
 	return c.cnf, nil
 }
 
@@ -59,7 +58,6 @@ func (c *CNFConverter) ConvertAST(node *classical.ASTNode) (*CNF, error) {
 	// Add unit clause to ensure root is true
 	rootLiteral := Literal{Variable: rootVar, Negated: false}
 	c.cnf.AddClause(NewClause(rootLiteral))
-
 	return c.cnf, nil
 }
 
@@ -73,7 +71,6 @@ func (c *CNFConverter) tseitinTransform(node *classical.ASTNode) (string, error)
 	case classical.NodeConstant:
 		// Create auxiliary variable for constant
 		auxVar := c.getNextAuxVar()
-
 		if node.Value == "true" || node.Value == "1" || node.Value == "T" {
 			// Add unit clause: auxVar
 			c.cnf.AddClause(NewClause(Literal{Variable: auxVar, Negated: false}))
@@ -81,7 +78,6 @@ func (c *CNFConverter) tseitinTransform(node *classical.ASTNode) (string, error)
 			// Add unit clause: ¬auxVar
 			c.cnf.AddClause(NewClause(Literal{Variable: auxVar, Negated: true}))
 		}
-
 		return auxVar, nil
 
 	case classical.NodeNot:
@@ -89,15 +85,13 @@ func (c *CNFConverter) tseitinTransform(node *classical.ASTNode) (string, error)
 			return "", core.NewLogicError("sat", "CNFConverter.tseitinTransform",
 				"NOT node must have exactly one child")
 		}
-
-		// FIX: Index the single child instead of passing the whole slice
+		// Index the single child
 		childVar, err := c.tseitinTransform(node.Children[0])
 		if err != nil {
 			return "", err
 		}
 
 		auxVar := c.getNextAuxVar()
-
 		// auxVar ↔ ¬childVar
 		// (auxVar ∨ childVar) ∧ (¬auxVar ∨ ¬childVar)
 		c.cnf.AddClause(NewClause(
@@ -108,7 +102,6 @@ func (c *CNFConverter) tseitinTransform(node *classical.ASTNode) (string, error)
 			Literal{Variable: auxVar, Negated: true},
 			Literal{Variable: childVar, Negated: true},
 		))
-
 		return auxVar, nil
 
 	case classical.NodeAnd:
@@ -167,11 +160,10 @@ func (c *CNFConverter) transformAnd(node *classical.ASTNode) (string, error) {
 	}
 
 	// (auxVar ∨ ¬child1 ∨ ... ∨ ¬childN)
-	literals := make([]Literal, len(childVars)+1)
-	// FIX: Assign to slice element, not to slice variable
-	literals[0] = Literal{Variable: auxVar, Negated: false}
-	for i, childVar := range childVars {
-		literals[i+1] = Literal{Variable: childVar, Negated: true}
+	literals := make([]Literal, 0, len(childVars)+1)
+	literals = append(literals, Literal{Variable: auxVar, Negated: false})
+	for _, childVar := range childVars {
+		literals = append(literals, Literal{Variable: childVar, Negated: true})
 	}
 	c.cnf.AddClause(NewClause(literals...))
 
@@ -199,11 +191,10 @@ func (c *CNFConverter) transformOr(node *classical.ASTNode) (string, error) {
 	auxVar := c.getNextAuxVar()
 
 	// First clause: (¬auxVar ∨ child1 ∨ ... ∨ childN)
-	lits := make([]Literal, len(childVars)+1)
-	// FIX: Assign to slice element, not to slice variable
-	lits[0] = Literal{Variable: auxVar, Negated: true}
-	for i, childVar := range childVars {
-		lits[i+1] = Literal{Variable: childVar, Negated: false}
+	lits := make([]Literal, 0, len(childVars)+1)
+	lits = append(lits, Literal{Variable: auxVar, Negated: true})
+	for _, childVar := range childVars {
+		lits = append(lits, Literal{Variable: childVar, Negated: false})
 	}
 	c.cnf.AddClause(NewClause(lits...))
 
@@ -226,7 +217,7 @@ func (c *CNFConverter) transformXor(node *classical.ASTNode) (string, error) {
 			"XOR node must have exactly two children")
 	}
 
-	// FIX: Index children instead of passing slice
+	// Index children
 	child1Var, err := c.tseitinTransform(node.Children[0])
 	if err != nil {
 		return "", err
@@ -271,7 +262,7 @@ func (c *CNFConverter) transformImplies(node *classical.ASTNode) (string, error)
 			"IMPLIES node must have exactly two children")
 	}
 
-	// FIX: Index children instead of passing slice
+	// Index children
 	child1Var, err := c.tseitinTransform(node.Children[0])
 	if err != nil {
 		return "", err
@@ -309,7 +300,7 @@ func (c *CNFConverter) transformIff(node *classical.ASTNode) (string, error) {
 			"IFF node must have exactly two children")
 	}
 
-	// FIX: Index children instead of passing slice
+	// Index children
 	child1Var, err := c.tseitinTransform(node.Children[0])
 	if err != nil {
 		return "", err
@@ -346,16 +337,14 @@ func (c *CNFConverter) transformIff(node *classical.ASTNode) (string, error) {
 	return auxVar, nil
 }
 
-// Additional transform methods for NAND, NOR...
+// transformNand: NAND(A,B,...) = ¬(A ∧ B ∧ ...)
 func (c *CNFConverter) transformNand(node *classical.ASTNode) (string, error) {
-	// NAND(A,B,...) = ¬(A ∧ B ∧ ...)
 	andVar, err := c.transformAnd(node)
 	if err != nil {
 		return "", err
 	}
 
 	auxVar := c.getNextAuxVar()
-
 	// auxVar ↔ ¬andVar
 	c.cnf.AddClause(NewClause(
 		Literal{Variable: auxVar, Negated: false},
@@ -365,19 +354,17 @@ func (c *CNFConverter) transformNand(node *classical.ASTNode) (string, error) {
 		Literal{Variable: auxVar, Negated: true},
 		Literal{Variable: andVar, Negated: true},
 	))
-
 	return auxVar, nil
 }
 
+// transformNor: NOR(A,B,...) = ¬(A ∨ B ∨ ...)
 func (c *CNFConverter) transformNor(node *classical.ASTNode) (string, error) {
-	// NOR(A,B,...) = ¬(A ∨ B ∨ ...)
 	orVar, err := c.transformOr(node)
 	if err != nil {
 		return "", err
 	}
 
 	auxVar := c.getNextAuxVar()
-
 	// auxVar ↔ ¬orVar
 	c.cnf.AddClause(NewClause(
 		Literal{Variable: auxVar, Negated: false},
@@ -387,7 +374,6 @@ func (c *CNFConverter) transformNor(node *classical.ASTNode) (string, error) {
 		Literal{Variable: auxVar, Negated: true},
 		Literal{Variable: orVar, Negated: true},
 	))
-
 	return auxVar, nil
 }
 
@@ -396,4 +382,75 @@ func (c *CNFConverter) getNextAuxVar() string {
 	auxVar := fmt.Sprintf("__aux_%d", c.nextAuxVar)
 	c.nextAuxVar++
 	return auxVar
+}
+
+// Add to CNFConverter to handle XOR more efficiently
+func (c *CNFConverter) ConvertExpressionExtended(expr string) (*ExtendedCNF, error) {
+	ast, err := classical.ParseExpression(expr)
+	if err != nil {
+		return nil, core.NewLogicError("sat", "CNFConverter.ConvertExpressionExtended",
+			fmt.Sprintf("failed to parse expression: %v", err))
+	}
+
+	ecnf := NewExtendedCNF()
+	c.cnf = ecnf.CNF
+	c.nextAuxVar = 1
+
+	// Convert AST with XOR detection
+	rootVar, err := c.tseitinTransformExtended(ast, ecnf)
+	if err != nil {
+		return nil, err
+	}
+
+	// Add unit clause to ensure root is true
+	rootLiteral := Literal{Variable: rootVar, Negated: false}
+	ecnf.AddClause(NewClause(rootLiteral))
+
+	return ecnf, nil
+}
+
+// Enhanced transformation that can generate XOR clauses directly
+func (c *CNFConverter) tseitinTransformExtended(node *classical.ASTNode, ecnf *ExtendedCNF) (string, error) {
+	switch node.Type {
+	case classical.NodeXor:
+		// Generate XOR clause directly instead of exponential expansion
+		if len(node.Children) >= 2 && len(node.Children) <= 10 { // Reasonable XOR size
+			return c.transformXorDirect(node, ecnf)
+		}
+		// Fall back to regular transformation for large XORs
+		return c.transformXor(node)
+
+	default:
+		// Use existing transformation methods
+		return c.tseitinTransform(node)
+	}
+}
+
+// transformXorDirect creates XOR clause directly
+func (c *CNFConverter) transformXorDirect(node *classical.ASTNode, ecnf *ExtendedCNF) (string, error) {
+	if len(node.Children) < 2 {
+		return "", core.NewLogicError("sat", "CNFConverter.transformXorDirect",
+			"XOR node must have at least two children")
+	}
+
+	// Transform children
+	childVars := make([]string, len(node.Children))
+	for i, child := range node.Children {
+		var err error
+		childVars[i], err = c.tseitinTransformExtended(child, ecnf)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	auxVar := c.getNextAuxVar()
+
+	// Create XOR clause: auxVar ⊕ child1 ⊕ child2 ⊕ ... = 1 (odd parity)
+	xorVars := make([]string, 0, len(childVars)+1)
+	xorVars = append(xorVars, auxVar)
+	xorVars = append(xorVars, childVars...)
+	xorClause := NewXORClause(xorVars, true) // odd parity
+	ecnf.AddXORClause(xorClause)
+
+	return auxVar, nil
 }
