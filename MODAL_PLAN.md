@@ -1,0 +1,678 @@
+# R4 — Modal Logic System Plan
+
+## MANDATORY CONSTRAINTS — READ BEFORE IMPLEMENTING ANYTHING
+
+> [!CAUTION]
+> THESE ARE NOT SUGGESTIONS. EVERY PHASE MUST COMPLY OR THE CODE IS REJECTED.
+
+### 1. Memory Allocation: `github.com/xDarkicex/memory` ONLY
+
+Before writing any code, read the full API of `github.com/xDarkicex/memory` at `../xDarkicex/memory`. Every single allocation in this package MUST use one of:
+
+| Allocator | Use for |
+|-----------|---------|
+| `memory.Pool` via `MustPoolSlice[T]` | Variable-length slices (formula lists, world paths, tableau branches, parser tokens). Bulk `Reset()` between evaluations. |
+| `memory.Arena` via `MustArenaSlice[T]` + `ArenaAppend` | Grow-only data (frame worlds, timeline entries, closure results). `Free()` on teardown. |
+| `memory.ShardedFreeList[T]` via `Acquire()` / `Release()` | Fixed-size structs allocated/deallocated at high frequency. The tableau prover creates and destroys thousands of `PrefixedFormula`, `TableauNode`, and boxed `World` handles per satisfiability check. ShardedFreeList gives O(1) alloc/free with no contention across parallel tableau branches. Use for any type whose size is known at compile time and whose lifetime is short and bounded. |
+
+**ABSOLUTELY FORBIDDEN:**
+- `make([]T, ...)` — use `memory.MustPoolSlice[T](pool, len, cap)` or `memory.MustArenaSlice[T](arena, len)`
+- `make(map[K]V)` — allowed ONLY for small lookup maps (≤ 50 entries, bounded by frame size). All backing slices within maps must be Pool/Arena.
+- `new(T)` or `&T{}` for any slice-backed struct — use Pool/Arena for the backing arrays.
+- `new(TableauNode)`, `&TableauNode{}`, `new(PrefixedFormula)`, `&PrefixedFormula{}` — these are fixed-size, high-churn structs. Use `ShardedFreeList[TableauNode].Acquire()` / `ShardedFreeList[PrefixedFormula].Acquire()`. This is NOT optional. The GC must never trace tableau expansion data.
+- `append()` on a non-Pool/non-Arena slice — use `memory.ArenaAppend` or manual Pool expansion.
+
+Every file that allocates must import `"github.com/xDarkicex/memory"`. The Go GC must never scan modal package data.
+
+### 2. Cyclomatic Complexity: STRICT ≤ 10
+
+Every function, exported or unexported, must have CC ≤ 10. No exceptions. If a function approaches 10, split it. Use `gocyclo` or manual counting (1 + if/for/case/&&/|| count).
+
+Hot-path functions (evaluators, tableau expansion, temporal operators) should target CC ≤ 6. Extract helpers aggressively.
+
+### 3. Testing: 100% Coverage, Every Function
+
+- Every exported function must have at least one dedicated test case.
+- Every internal helper must be exercised through exported function tests.
+- Run `go test ./modal -cover` after every phase. Target: 100% statement coverage.
+- Run `go test ./modal -race` after every phase. Must pass.
+- Test edge cases: empty frame, single world, cyclic accessibility, contradictory valuation, maximum-depth recursion.
+
+### 4. Go Doc Comments: Every Public API
+
+Every exported type, function, method, and constant must have a Go doc comment starting with the name:
+
+```go
+// World is a handle to a possible world in a Kripke frame.
+// Worlds are allocated from an Arena and indexed by uint32 handles.
+type World uint32
+
+// Eval evaluates a modal formula at the given world in the model.
+// Returns the truth value of the formula, which may be fuzzy if the model
+// uses weighted accessibility relations via fuzzy_bridge.go.
+func (m *Model) Eval(formula Formula, world World) (TruthValue, error) {
+```
+
+No bare exports. Every `func`, `type`, `const`, `var` that is capitalized gets a doc comment.
+
+---
+
+## Design Goals
+
+- **Zero heap allocations** — all backing memory via `github.com/xDarkicex/memory`
+- **Cyclomatic complexity ≤ 10** per function (STRICT, enforced)
+- **100% unit test coverage** — every exported function, every internal helper
+- **Go doc comments** — every public API fully documented
+- **Big O documented per function** — time and space
+- **Direct integration with daemon's causal graph** — why_ids/how_ids/hop_targets are accessibility relations
+
+---
+
+## Why Modal Logic for Agentic Memory?
+
+The daemon (`libravdbd`) already has a graph: memory nodes linked by `why_ids` (upstream causal), `how_ids` (downstream procedural), and `hop_targets` (undirected association). This graph is a **Kripke frame**.
+
+| Graph concept | Modal logic equivalent |
+|---------------|----------------------|
+| Memory node | Possible world w |
+| why_ids edge | Accessibility relation R_causal |
+| how_ids edge | Accessibility relation R_procedural |
+| hop_targets edge | Accessibility relation R_association |
+| Elevated/guided memory | □p — necessarily true |
+| Regular retrieved memory | ◇p — possibly relevant |
+| Hop expansion (`etaWhy=0.7`) | Accessibility strength (weighted frame) |
+| Memory A contradicts memory B | ¬(□p ∧ □¬p) — consistency constraint |
+
+**What modal logic adds that the daemon doesn't have today:**
+
+1. **Consistency verification:** Before returning top-8, check that no two retrieved memories logically contradict. The SAT solver already exists — modal logic provides the □/◇ operators that frame the verification query.
+
+2. **Belief revision:** When a new elevated memory (□p) contradicts an old belief (◇p), the system knows to demote the old belief to ◇(p ∧ ¬□p) — "it was possible, now it's uncertain." Currently the daemon just overwrites.
+
+3. **Temporal reasoning:** Session timelines are linear temporal frames. "This was true yesterday" → □(yesterday → p). "This might still be true" → ◇p. The compaction system uses this to decide what to summarize vs preserve verbatim.
+
+4. **Multi-agent delegation:** When agent A delegates to agent B, B's memory state is a world accessible from A. B knows p → □_B p. A knows B knows p → □_A □_B p. This is critical for nested delegation chains.
+
+5. **Counterfactual recall:** "What would the agent have retrieved if it searched for X instead of Y?" This is modal possibility semantics over the retrieval function itself. The fuzzy engine scores relevance; modal logic verifies the counterfactual structure.
+
+---
+
+## Reuse from Existing Packages
+
+The modal package must NOT reimplement what already exists in this repo.
+
+| Capability | Already in | How modal uses it |
+|------------|-----------|-------------------|
+| AND, OR, NOT, XOR, XNOR, NAND, NOR, Implies, Iff | `classical/gates.go` — `Gate` interface | Propositional subformulas within modal expressions. `implies(a,b)` delegates to `classical.Implies(a,b)` |
+| Expression parser/lexer | `classical/parser.go`, `classical/lexer.go` | Reuse tokenizer pattern (Pool-backed `[]Token`) for modal formula parsing |
+| SAT solver (CDCL) | `sat/cdcl.go` — First-UIP, LBD, VSIDS, XOR, inprocessing | Boolean satisfiability checks inside the tableau prover; equivalence checks for formula simplification |
+| CNF conversion (Tseitin) | `sat/cnf_converter.go` | Convert propositional subformulas to CNF for SAT-backed validity checking |
+| Truth values [0,1], t-norms, t-conorms, implications | `fuzzy/operators.go` | Phase 6 fuzzy-modal bridge: weighted accessibility relations, fuzzy □/◇ evaluation |
+| Defuzzification, membership functions | `fuzzy/` | Fuzzy-modal bridge output crispification |
+| `core.LogicSystem` interface | `core/interfaces.go` | Phase 7 `ModalLogicSystem` adapter |
+| `memory.Pool`, `memory.Arena`, `memory.ShardedFreeList` | `github.com/xDarkicex/memory` | All allocations |
+
+> **Key insight from Spot:** Spot bundles a SAT solver (PicoSAT) and BDD library (BuDDy) for boolean reasoning. Our SAT solver is more feature-rich than PicoSAT (we have Gaussian elimination, XOR reasoning, inprocessing). What Spot adds that we don't have is BDDs — O(1) equivalence checking after construction. For R4, SAT-backed checks are sufficient. BDDs are a potential R5 optimization.
+
+---
+
+## Mathematical Foundations (from Spot, Somenzi & Bloem, and LTL literature)
+
+These are mathematical identities and structural principles — not copyable code. Every formula below is standard modal logic, documented here to guide our implementation.
+
+### 1. Operator Duality
+
+Every temporal operator has a dual via negation. This is the foundation of NNF conversion.
+
+```
+¬□p ≡ ◇¬p          ¬◇p ≡ □¬p          ¬○p ≡ ○¬p
+¬(p U q) ≡ (¬p R ¬q)   ¬(p R q) ≡ (¬p U ¬q)
+¬(p W q) ≡ (¬p M ¬q)   ¬(p M q) ≡ (¬p W ¬q)
+```
+
+These identities mean we only need to implement one of each dual pair natively; the other is derived.
+
+### 2. Negative Normal Form (NNF)
+
+Push all negations inward until they only appear before atomic propositions. This is the canonical representation for all further processing (tableau expansion, model construction, simplification).
+
+```
+NNF(¬(p ∧ q)) = NNF(¬p) ∨ NNF(¬q)    NNF(¬□p) = ◇NNF(¬p)
+NNF(¬(p ∨ q)) = NNF(¬p) ∧ NNF(¬q)    NNF(¬◇p) = □NNF(¬p)
+NNF(¬¬p) = NNF(p)                     NNF(¬○p) = ○NNF(¬p)
+NNF(¬(p U q)) = NNF(¬p) R NNF(¬q)
+```
+
+### 3. Basic Simplification Rewrites (Spot Level 1)
+
+Applied iteratively to fixed-point on every formula before tableau expansion. These prevent state explosion by reducing formula size BEFORE construction.
+
+**Idempotence:**
+```
+p ∧ p → p          p ∨ p → p          □□p → □p          ◇◇p → ◇p
+```
+
+**Distributivity of modal operators:**
+```
+□p ∧ □q → □(p ∧ q)     ◇p ∨ ◇q → ◇(p ∨ q)
+```
+
+**Absorption and complement:**
+```
+p ∧ (p ∨ q) → p        p ∨ (p ∧ q) → p
+p ∧ ¬p → ff            p ∨ ¬p → tt
+p ∧ tt → p             p ∨ ff → p
+p ∧ ff → ff            p ∨ tt → tt
+```
+
+**Constant propagation under modalities:**
+```
+□(tt) → tt             ◇(ff) → ff
+```
+
+### 4. Syntactic Implication (Somenzi & Bloem 2000)
+
+Fast structural checks for `f → g` without SAT/automata. These rules detect implication from formula shape alone. Used during simplification to eliminate redundant subformulas.
+
+Core rules (expressed as "if f has shape X and g has shape Y, f → g"):
+```
+p → (p ∨ q)                     // disjunction introduction
+(p ∧ q) → p                     // conjunction elimination
+f → g and f → h ⟹ f → (g ∧ h)  // conjunction combination
+f → h and g → h ⟹ (f ∨ g) → h  // disjunction combination
+□p → p                          // reflexivity (T axiom)
+□p → □□p                        // transitivity (S4)
+◇p → □◇p                        // symmetry (S5)
+```
+
+### 5. Array-Backed Graph Storage (Spot's `digraph` pattern)
+
+The single most important performance insight from Spot. States and edges are stored in flat contiguous arrays, not linked objects. This eliminates pointer chasing and enables cache-line-friendly iteration — critical for tableau expansion which visits thousands of states.
+
+**Spot's C++ layout:**
+```
+state_vector states_;    // std::vector — all states in one contiguous block
+edge_vector  edges_;     // std::vector — all edges in one contiguous block
+                         // edges_[i].next_succ chains outgoing edges within the array
+```
+
+**Our Go mapping:**
+```
+Frame.Worlds          → Arena via MustArenaSlice[World]     // grow-only world list
+Frame.Relations       → Pool via MustPoolSlice[Edge]         // CSR-like edge array
+                                           // Edge.Src, Edge.Dst, Edge.NextSucc are indices
+TableauNode struct    → ShardedFreeList[TableauNode]         // fixed 64B, per-branch alloc/free
+PrefixedFormula struct → ShardedFreeList[PrefixedFormula]    // fixed 16B, per-expansion alloc/free
+```
+
+**Why this matters:** During tableau expansion, each branch creates hundreds of PrefixedFormula structs (world + formula pairs). With ShardedFreeList, each is O(1) acquire/release with no GC scan. The edge array is CSR-like: iterate outgoing edges by following `next_succ` indices within a flat Pool slice — zero pointer dereferences.
+
+### 6. Formula Hierarchy (Safety/Guarantee/Obligation/Recurrence/Persistence)
+
+Spot classifies LTL formulas into a hierarchy. This is useful for selecting the optimal proof strategy.
+
+| Class | Shape | Example | Proof strategy |
+|-------|-------|---------|----------------|
+| **Safety** | □p (something bad never happens) | □¬error | Invariant checking — find a counterexample prefix |
+| **Guarantee** | ◇p (something good eventually happens) | ◇success | Reachability — find a path to p |
+| **Obligation** | Safety ∨ Guarantee | □safe ∨ ◇goal | Split into two sub-proofs |
+| **Recurrence** | □◇p (p holds infinitely often) | □◇alive | Cycle detection — find a reachable cycle containing p |
+| **Persistence** | ◇□p (p eventually always holds) | ◇□stable | Find a reachable SCC where p holds everywhere |
+
+The daemon's temporal queries map naturally: "was this true before compaction?" → Safety. "Will this memory still be relevant?" → Guarantee. "Consistency across all retrievals" → Persistence.
+
+### 7. Structural Reduction Before Construction
+
+Spot's single most important algorithmic principle: **aggressively rewrite and simplify the formula before building any graph structure.** This is the lesson from decades of model checking: structural simplification prevents state explosion that no amount of hardware can overcome.
+
+Concretely, for every formula entering our `semantics.go` evaluator or `tableau.go` prover:
+1. Convert to NNF
+2. Apply basic rewrites to fixed-point
+3. Apply syntactic implication to detect redundant subformulas  
+4. Classify the formula (safety/guarantee/etc.) to select optimal evaluation strategy
+5. Only THEN evaluate or expand
+
+This pipeline is the difference between evaluating a 5-world frame and evaluating a 500-world frame. The rewrites are O(n) on formula size; the evaluation is O(2^w) on world count.
+
+---
+
+## System Axioms (increasing strength)
+
+| System | Condition on R | Axiom | Use in daemon |
+|--------|---------------|-------|---------------|
+| **K** | (none) | □(p→q) → (□p→□q) | Base: any graph edge is an accessibility relation |
+| **D** | Serial (every world has at least one successor) | □p → ◇p | Every memory has at least one hop target (no dead ends) |
+| **T** | Reflexive | □p → p | A memory is accessible from itself (self-loop for identity) |
+| **B** | Symmetric | p → □◇p | Bidirectional hop_targets |
+| **S4** | Reflexive + Transitive | □p → □□p | why_id chains (causal transitivity — if A caused B caused C, then A caused C) |
+| **S5** | Equivalence relation | ◇p → □◇p | Elevated memory cluster (all elevated nodes are mutually accessible) |
+
+---
+
+## Package Structure
+
+```
+modal/
+  types.go          # World, Frame, Model, Valuation, Formula
+  frame.go          # Kripke frame construction, accessibility relations, path finding
+  semantics.go      # Kripke semantics evaluator (truth at world w in model M)
+  tableau.go        # Tableau-based satisfiability checker (tree of prefixed formulas)
+  axioms.go         # System K, D, T, B, S4, S5 axiom schemas and frame conditions
+  temporal.go       # Linear temporal logic (LTL) operators: □ (always), ◇ (eventually), U (until)
+  epistemic.go      # Multi-agent knowledge operators: □_A, ◇_A, common knowledge
+  fuzzy_bridge.go   # LE-FALC bridge: fuzzy truth values under modal operators
+  parser.go         # Modal expression lexer/parser ("□(p → ◇q)", "K_A p", "◇(p U q)")
+  system.go         # core.LogicSystem adapter
+  modal_test.go     # comprehensive tests
+```
+
+---
+
+## Phase 1: Foundation — Kripke Semantics
+
+### `types.go`
+
+```go
+type World uint32  // VarID-style handle into symbol table
+
+type Formula interface {
+    Evaluate(w World, m *Model) (TruthValue, error)  // returns fuzzy-capable truth
+}
+
+// Atomic propositions
+type Atom struct {
+    ID   VarID
+    Name string  // Pool-backed
+}
+
+// Modal operators
+type Box struct { Formula }    // □ — necessity
+type Diamond struct { Formula } // ◇ — possibility
+
+// Classical connectives (reuse from classical/ package where possible)
+type Not struct { Formula }
+type And struct { Left, Right Formula }
+type Or struct { Left, Right Formula }
+type Implies struct { Antecedent, Consequent Formula }
+type Iff struct { Left, Right Formula }
+```
+
+CC=1-3 per struct. All Formula types are value types (no boxing unless needed for the interface).
+
+### `frame.go`
+
+```go
+type Frame struct {
+    Worlds      []World            // Arena-backed
+    Relations   map[RelationKey][]World  // source → []target
+    // RelationKey = (source World, relationType uint8): why=0, how=1, hop=2, user-defined=3+
+}
+
+type Model struct {
+    Frame      *Frame
+    Valuation  map[VarID]map[World]TruthValue  // atom → world → truth value
+}
+```
+
+CC=1-5 functions:
+- `NewFrame(pool *memory.Pool) *Frame` — CC=1
+- `AddWorld() World` — CC=1
+- `AddRelation(source, target World, relType uint8)` — CC=2
+- `Accessible(from World, relType uint8) []World` — CC=2, O(1) map lookup
+- `IsAccessible(from, to World, relType uint8) bool` — CC=3, O(k) linear scan of edges
+- `ReflexiveClosure(relType uint8)` — CC=4, O(W) add self-loops
+- `TransitiveClosure(relType uint8)` — CC=5, O(W³) Floyd-Warshall
+- `SymmetricClosure(relType uint8)` — CC=3, O(E) add reverse edges
+- `FromDaemonGraph(whyIDs, howIDs, hopTargets map[uint64][]uint64) *Frame` — CC=4, O(V+E). Direct bridge from daemon's causal graph.
+
+### `semantics.go`
+
+```go
+func (m *Model) Eval(formula Formula, world World) (TruthValue, error)
+```
+
+CC=6 dispatcher, delegates to per-operator evaluators (CC≤4 each):
+- `evalAtom(w World) TruthValue` — O(1) lookup in Valuation map
+- `evalBox(f Formula, w World, relType uint8) TruthValue` — O(A) where A = accessible worlds. Returns min truth across all accessible worlds. For crisp logic: true iff f is true in ALL accessible worlds.
+- `evalDiamond(f Formula, w World, relType uint8) TruthValue` — O(A). Returns max truth across all accessible worlds. For crisp logic: true iff f is true in SOME accessible world.
+- `evalNot`, `evalAnd`, `evalOr`, `evalImplies`, `evalIff` — O(1) each after recursive eval
+
+Space: O(depth) for recursion stack. Max depth ≤ formula size.
+
+---
+
+## Phase 2: Tableau Prover
+
+### `tableau.go`
+
+Modal satisfiability checking via analytic tableaux. Given a formula φ, construct a tree where each branch is a set of prefixed formulas σ:ψ (read: "at world σ, ψ is true"). Apply expansion rules until either:
+- All branches are closed (contradiction) → φ is unsatisfiable
+- A branch is complete and open → φ is satisfiable, model can be extracted
+
+```go
+type TableauNode struct {
+    Prefix     []World          // world path (Arena-backed)
+    Formulas   []PrefixedFormula // (prefix, formula) pairs (Pool-backed)
+    Children   []*TableauNode   // alternative branches
+    Closed     bool
+}
+
+type PrefixedFormula struct {
+    World   World
+    Formula Formula
+}
+```
+
+CC≤8 functions:
+- `ProveSatisfiable(formula Formula, frame *Frame) (bool, *Model)` — CC=6. Returns satisfiable + counter-model if true.
+- `ProveValid(formula Formula, frame *Frame) bool` — CC=2. ¬φ is unsatisfiable → φ is valid.
+- `ProveEntails(premises []Formula, conclusion Formula, frame *Frame) bool` — CC=3. premises → conclusion valid?
+- `expandBoxRule(node *TableauNode, pf PrefixedFormula)` — CC=4
+- `expandDiamondRule(node *TableauNode, pf PrefixedFormula)` — CC=4
+- `expandAndRule`, `expandOrRule`, `expandNotRule` — CC≤3 each
+- `isContradictory(formulas []PrefixedFormula) bool` — CC=3
+
+---
+
+## Phase 3: Axiom Systems
+
+### `axioms.go`
+
+Pre-built frame transformers that enforce specific axiom system properties.
+
+```go
+func EnforceSystemK(frame *Frame)    // no-op, K holds in all frames
+func EnforceSystemD(frame *Frame)    // add seriality: every world has ≥1 successor
+func EnforceSystemT(frame *Frame)    // add reflexivity
+func EnforceSystemB(frame *Frame)    // add symmetry
+func EnforceSystemS4(frame *Frame)   // reflexivity + transitivity
+func EnforceSystemS5(frame *Frame)   // equivalence relation
+func ValidateFrameAgainst(frame *Frame, system System) error  // check if frame satisfies axioms
+```
+
+CC≤4 each. All O(V+E) or O(V³) for transitive closure.
+
+```go
+type System int
+const (
+    SystemK System = iota
+    SystemD
+    SystemT
+    SystemB
+    SystemS4
+    SystemS5
+)
+```
+
+---
+
+## Phase 4: Temporal Logic (LTL)
+
+### `temporal.go`
+
+Linear temporal logic over session timelines. Each session turn is a world. The accessibility relation is time: R(s, t) iff t is the next turn after s.
+
+```go
+type TemporalModel struct {
+    *Model
+    Timeline []World  // ordered session worlds (Arena-backed)
+}
+```
+
+Operators:
+| Operator | Symbol | Meaning | Time complexity |
+|----------|--------|---------|----------------|
+| Always | □p | p holds now and in all future states | O(T) where T = timeline length from current world |
+| Eventually | ◇p | p holds now or at some future state | O(T) |
+| Next | ○p | p holds in the next state | O(1) |
+| Until | p U q | p holds until q holds | O(T²) worst |
+| Weak Until | p W q | p holds unless q holds (q may never hold) | O(T) |
+
+CC≤8 functions:
+- `NewTemporalModel(timeline []World, pool *memory.Pool) *TemporalModel` — CC=1
+- `EvalAlways(p Formula, w World) TruthValue` — CC=3, O(T)
+- `EvalEventually(p Formula, w World) TruthValue` — CC=3, O(T)
+- `EvalNext(p Formula, w World) TruthValue` — CC=2, O(1)
+- `EvalUntil(p, q Formula, w World) TruthValue` — CC=4, O(T²)
+- `EvalWeakUntil(p, q Formula, w World) TruthValue` — CC=3, O(T)
+
+**Daemon use:** Session timeline = temporal frame. "Was this fact true before the compaction event?" → □(before_compaction → fact). "Will this memory still be relevant in 10 turns?" → ◇(future ∧ memory).
+
+---
+
+## Phase 5: Epistemic Logic
+
+### `epistemic.go`
+
+Multi-agent knowledge and belief. Each agent has its own accessibility relation. □_A p means "agent A knows p."
+
+```go
+type EpistemicModel struct {
+    *Model
+    Agents      []AgentID            // Arena-backed
+    Knowledge   map[AgentID]uint8    // agent → relation type for accessibility
+    Belief      map[AgentID]uint8    // agent → relation type for belief (possibly different)
+}
+
+type AgentID uint32
+```
+
+CC≤6 functions:
+- `NewEpistemicModel(agents []AgentID, pool *memory.Pool) *EpistemicModel` — CC=1
+- `Knows(agent AgentID, p Formula, w World) TruthValue` — CC=2, delegates to evalBox with agent's relation
+- `Believes(agent AgentID, p Formula, w World) TruthValue` — CC=2
+- `CommonKnowledge(group []AgentID, p Formula, w World) TruthValue` — CC=5, O(A^d) where d = group size. Fixed-point over the transitive closure of the union of all group members' relations.
+- `DistributedKnowledge(group []AgentID, p Formula, w World) TruthValue` — CC=4, O(A). Intersection of what each agent individually knows.
+- `IsKnowledgeConsistent(agent AgentID, w World) bool` — CC=3. No world where □p and □¬p both hold for any p.
+
+**Daemon use:** When the agent delegates a sub-task, the sub-agent's memory state is an epistemic world. □_main □_sub p means "the main agent knows that the sub-agent knows p." When sub-agent returns results, main checks `Believes(sub, result) ∧ ¬Knows(main, result)` → trusts but verifies.
+
+---
+
+## Phase 6: Fuzzy-Modal Bridge (LE-FALC)
+
+### `fuzzy_bridge.go`
+
+The LE-FALC research (2025) provides the formal foundation for fuzzy truth values under modal operators. This bridges `modal/` with `fuzzy/`.
+
+```go
+func BoxOverFuzzy(f Formula, w World, m *Model, tnorm func(a, b TruthValue) TruthValue) TruthValue
+func DiamondOverFuzzy(f Formula, w World, m *Model, tconorm func(a, b TruthValue) TruthValue) TruthValue
+```
+
+For crisp frames (standard Kripke semantics):
+- □p = min truth of p across all accessible worlds (Gödel t-norm)
+- ◇p = max truth of p across all accessible worlds (Gödel t-conorm)
+
+For weighted frames (daemon hop expansion, where edge weights ∈ [0,1]):
+- □p = ⊗_{w' ∈ R(w)} (R(w,w') → p(w'))  — Łukasiewicz implication weighted by edge strength
+- ◇p = ⊕_{w' ∈ R(w)} (R(w,w') ⊗ p(w'))  — Product t-norm weighted sum
+
+CC≤6 functions:
+- `BoxFuzzy(f Formula, w World, m *Model, cfg FuzzyConfig) TruthValue` — CC=5
+- `DiamondFuzzy(f Formula, w World, m *Model, cfg FuzzyConfig) TruthValue` — CC=5
+- `WeightedFrameAccessibility(from, to World, relType uint8, weights map[EdgeKey]float64) TruthValue` — CC=2
+- `FuzzyEntailment(premises []Formula, conclusion Formula, frame *Frame, fuzzyCfg FuzzyConfig) TruthValue` — CC=6
+
+**Daemon use:** The existing hop expansion weights (`etaWhy=0.7`, `etaHow=0.4`) become weighted accessibility relations. □_{why}(fact) = 0.7 means "fact is necessarily true via causal chain with confidence 0.7." Fuzzy modal operators propagate uncertainty through the graph.
+
+---
+
+## Phase 7: Parser & System Bridge
+
+### `parser.go`
+
+Lexer/parser for modal formulas. Shares `classical/lexer.go` Pool-backed token patterns.
+
+Supported syntax:
+```
+□p           — necessity (ASCII: []p)
+◇p           — possibility (ASCII: <>p)
+□(p → ◇q)   — nested modal
+□_A p        — epistemic: agent A knows p
+◇(p U q)     — temporal until
+□[why]p      — relation-qualified necessity (daemon: why_ids)
+◇[how]p      — relation-qualified possibility (daemon: how_ids)
+```
+
+CC≤8 functions. Recursive descent parser. Precedence: □/◇/○ > ¬ > ∧ > ∨ > → > ↔.
+
+### `system.go`
+
+```go
+type ModalLogicSystem struct {
+    frame  *Frame
+    model  *Model
+    pool   *memory.Pool
+}
+```
+
+CC=1-3 functions:
+- `NewModalLogicSystem(pool *memory.Pool) *ModalLogicSystem` — CC=1
+- `Name() string` — CC=1
+- `Evaluate(expression string, ctx core.EvaluationContext) (bool, error)` — CC=4
+- `Validate(expression string) error` — CC=3
+- `SupportedOperators() []string` — CC=1
+
+---
+
+## Memory Allocation Strategy
+
+| Structure | Allocator | Rationale |
+|-----------|-----------|-----------|
+| `Frame.Worlds` | `Arena` via `MustArenaSlice[World]` | Grow-only world list |
+| `Frame.Relations` map | Go heap | Map keyed by `RelationKey` (uint64); bounded by edges |
+| `Model.Valuation` map | Go heap | Map of maps; small per evaluation |
+| `TableauNode` (struct) | `ShardedFreeList[TableauNode]` | Fixed ~64B struct; created per branch, freed on branch close. Thousands per `ProveSatisfiable()` |
+| `PrefixedFormula` (struct) | `ShardedFreeList[PrefixedFormula]` | Fixed 16B struct; allocated per expansion step, freed on contradiction. Hot path. |
+| Boxed `World` handles | `ShardedFreeList[World]` | 4B handle; allocated when world needs to escape stack (path tracking). Per-expansion. |
+| `TableauNode.Prefix` | `Arena` via `MustArenaSlice[World]` | Per-branch world path — Arena because it grows as the branch deepens, freed once on branch close |
+| `TableauNode.Formulas` | `Pool` via `MustPoolSlice[PrefixedFormula]` | Per-branch formula set — variable length, Reset() between branches |
+| `TemporalModel.Timeline` | `Arena` via `MustArenaSlice[World]` | Ordered session worlds |
+| Parser tokens | `Pool` via `MustPoolSlice[Token]` | Same as `classical/lexer.go` |
+| Fuzzy-modal intermediates | `Pool` via `MustPoolSlice[TruthValue]` | Per-evaluation truth vectors |
+| `EpistemicModel.Agents` | `Arena` via `MustArenaSlice[AgentID]` | Grow-only; agents added once |
+| `Axiom closure results` | `Arena` via `MustArenaSlice[World]` | Reflexive/transitive/symmetric closure output — computed once, read many times |
+
+> **Why ShardedFreeList for TableauNode and PrefixedFormula?** Tableau search explores multiple branches, some in parallel. Each expansion step creates a PrefixedFormula (world + formula pair). When a branch contradicts, the node and its formulas are freed. ShardedFreeList's per-worker shards eliminate lock contention across parallel branch workers. The 48-byte SIMD alignment ensures cache-line-friendly access patterns during the hot expansion loop.
+
+---
+
+## Function Complexity Budget
+
+| File | Functions | Max CC |
+|------|-----------|--------|
+| `types.go` | 12 | 3 |
+| `frame.go` | 10 | 5 |
+| `semantics.go` | 10 | 6 |
+| `tableau.go` | 12 | 8 |
+| `axioms.go` | 7 | 4 |
+| `temporal.go` | 8 | 8 |
+| `epistemic.go` | 9 | 6 |
+| `fuzzy_bridge.go` | 6 | 6 |
+| `parser.go` | 14 | 8 |
+| `system.go` | 5 | 4 |
+| **Total** | **~93** | **8 (max)** |
+
+---
+
+## Implementation Order
+
+### Phase 1: Kripke Semantics
+1. **`types.go`** — World, Formula interface, Atom, Box, Diamond, Not, And, Or, Implies, Iff
+2. **`frame.go`** — Frame, Model, accessibility relations, closures, daemon graph bridge
+3. **`semantics.go`** — Kripke evaluator: truth at world w in model M
+4. **Tests** — All above, 100% coverage
+
+### Phase 2: Tableau Prover
+5. **`tableau.go`** — Analytic tableau for satisfiability/validity/entailment
+6. **Tests** — Known valid/invalid formulas, counter-model extraction
+
+### Phase 3: Axiom Systems
+7. **`axioms.go`** — System K/D/T/B/S4/S5 enforcers and validators
+8. **Tests** — Frame property verification after closure operations
+
+### Phase 4: Temporal Logic
+9. **`temporal.go`** — LTL operators over session timelines
+10. **Tests** — Temporal formula evaluation on known timelines
+
+### Phase 5: Epistemic Logic
+11. **`epistemic.go`** — Multi-agent knowledge, belief, common knowledge
+12. **Tests** — Muddy children puzzle, delegation chains
+
+### Phase 6: Fuzzy-Modal Bridge
+13. **`fuzzy_bridge.go`** — Weighted accessibility, fuzzy entailment, LE-FALC integration
+14. **Tests** — Fuzzy-modal formula on weighted frames, daemon hop weight validation
+
+### Phase 7: Integration
+15. **`parser.go`** — Modal formula lexer/parser
+16. **`system.go`** — core.LogicSystem bridge
+17. **Integration tests** — Daemon graph consistency checking, belief revision scenarios
+
+---
+
+---
+
+## Verification Requirements (Every Phase)
+
+### Automated
+```bash
+go test ./modal -v -cover          # 100% statement coverage
+go test ./modal -race -timeout 60s # zero data races
+go vet ./modal                     # no static analysis warnings
+```
+
+### Manual (per phase)
+- [ ] Every function CC ≤ 10 (run `gocyclo` or manual count)
+- [ ] Every exported symbol has a Go doc comment starting with the name
+- [ ] Zero `make()` calls for slices (verify with `grep -r "make(\[\]" modal/`)
+- [ ] Zero `new()` calls (verify with `grep -r "\bnew(" modal/`)
+- [ ] `memory.Pool`/`memory.Arena` usage matches the allocation table for every structure
+- [ ] `append()` only used on Pool/Arena-backed slices via `memory.ArenaAppend` or manual Pool expansion
+
+### Per-Phase Gate
+Each phase must pass all automated checks before the next phase begins. No exceptions.
+
+---
+
+## Research Targets (Deep Research Prompts)
+
+### Target 1: Modal Logic for Knowledge Graph Verification (2025–2026)
+
+Search for: "modal logic knowledge graph consistency verification 2025 2026", "Kripke semantics graph database", "description logic modal operators knowledge base", "weighted accessibility relation graph neural", "temporal description logic streaming data 2025".
+
+What we need: How are modal operators (□, ◇) used to verify consistency in graph databases? Are there production systems using Kripke semantics over knowledge graphs?
+
+### Target 2: Belief Revision Under Contradiction (2025–2026)
+
+Search for: "belief revision modal logic 2025 2026", "AGM postulates fuzzy belief change", "paraconsistent modal logic dynamic", "iterated belief revision agent memory", "non-prioritized belief revision neural symbolic".
+
+What we need: When a new elevated memory contradicts existing beliefs, what's the mathematically correct revision procedure? The AGM postulates are classic but fuzzy-modal extensions are new.
+
+### Target 3: Epistemic Logic for Multi-Agent Delegation (2025–2026)
+
+Search for: "epistemic logic multi-agent delegation 2025 2026", "dynamic epistemic logic knowledge update", "common knowledge distributed systems verification", "nested belief reasoning agent chains", "knowing whether vs knowing that agent planning".
+
+What we need: How do production multi-agent systems model nested knowledge? What's the state of the art in epistemic planning?
+
+### Target 4: Temporal Logic for Session Memory (2025–2026)
+
+Search for: "linear temporal logic session memory 2025 2026", "LTL monitoring runtime verification", "temporal logic belief timeline agent", "past temporal operators memory retrieval", "metric temporal logic real-time agent".
+
+What we need: How are temporal operators (always, eventually, until, since) used in agent memory systems? Is there work on "temporal relevance" — decaying belief strength over time using temporal modal operators?
+
+### Target 5: Go Modal Logic Libraries (Landscape)
+
+Search for: "Go modal logic library Kripke", "Go theorem prover modal", "Go description logic reasoner", "Go LTL model checker", "Go epistemic logic solver".
+
+What we need: Does anything exist in Go? If not — same situation as fuzzy — we're first.
+
+---
+
+## What's NOT in Scope (R4)
+
+- Full first-order modal logic (FOL + modal) — stays propositional modal for R4
+- Dynamic epistemic logic (action models, public announcements) — R5
+- Probabilistic modal logic (probability distributions over worlds) — R5
+- Deontic logic (obligation/permission) — separate library territory
+- Model checking against external specifications — separate tool territory
