@@ -17,7 +17,7 @@ Most logic libraries pick one paradigm and stop. This one doesn't. Real systems 
 |----------|--------------|
 | **Classical** | All 7 gates (AND/OR/XOR/NAND/NOR/NOT/XNOR), implication, biconditional, fluent evaluator, truth tables, tautology/contradiction/contingency detection, DeMorgan/Distributive laws, circuit simulator |
 | **SAT** | CDCL solver with First-UIP learning, LBD tracking, VSIDS/LRB/CHB heuristics, XOR reasoning via Gaussian elimination, MaxSAT, inprocessing (BVE, subsumption, probing), Tseitin CNF conversion, DPLL fallback |
-| **Fuzzy** | Mamdani + TSK engines, 7 membership functions, 4 t-norms, 3 t-conorms, 4 implications, 6 defuzzifiers, FCM clustering, ANFIS training, Type-2 sets with FOU, linguistic hedges, XAI rule extraction, multi-strategy arbiter |
+| **Fuzzy** | Mamdani + TSK engines, 20 membership functions, 7 t-norms, 9 t-conorms, 4 implications, 7 activation methods, 6 defuzzifiers, `RuleBlock` (per-block operators), `OutputVariable` (per-variable defuzzifier/aggregation), FCM clustering, ANFIS training, Type-2 sets with FOU, hedges, XAI rule extraction, multi-strategy arbiter, numerical utilities (Softplus/Softmax/LogSoftmax/Sparsemax) |
 | **Modal** *(in progress)* | Kripke semantics, tableau prover, temporal logic (LTL), epistemic logic, fuzzy-modal bridge |
 
 ### Zero-Heap, Low Complexity, Production Grade
@@ -173,23 +173,45 @@ tsk.AddRule(fuzzy.TSKRule{
 output, _ := tsk.Evaluate(inputs)
 ```
 
-#### Membership Functions
+#### Membership Functions (20 total)
 
 ```go
-fuzzy.Triangular(a, b, c float64)    // Triangle: peak at b, support [a, c]
-fuzzy.Trapezoidal(a, b, c, d float64) // Trapezoid: flat top [b, c]
-fuzzy.Gaussian(mean, stddev float64)   // Gaussian bell curve
-fuzzy.Bell(a, b, c float64)            // Generalized bell: 1/(1 + |(x-c)/a|^2b)
-fuzzy.Sigmoid(a, c float64)            // Sigmoid: 1/(1 + exp(-a*(x-c)))
-fuzzy.Singleton(value float64)         // Single crisp value
-fuzzy.Laplace(loc, scale float64)      // Laplace distribution
+// Basic
+fuzzy.Triangular(a, b, c float64)      // Triangle: peak at b, support [a, c]
+fuzzy.Trapezoidal(a, b, c, d float64)   // Trapezoid: flat top [b, c]
+fuzzy.Rectangle(start, end float64)     // Rectangle: 1 inside [start, end], 0 outside
+fuzzy.Singleton(value float64)           // Single crisp value
+fuzzy.Discrete(xyPairs []float64, pool) // Table-based (x,y pairs) with linear interpolation
+
+// Curves
+fuzzy.Gaussian(mean, stddev float64)     // Gaussian bell curve
+fuzzy.GaussianProduct(mean, σLeft, σRight) // Asymmetric Gaussian
+fuzzy.Bell(a, b, c float64)             // Generalized bell: 1/(1 + |(x-c)/a|^2b)
+fuzzy.Laplace(loc, scale float64)        // Laplace distribution
+fuzzy.Cosine(center, width float64)      // Cosine-based smooth MF
+
+// Sigmoid family
+fuzzy.Sigmoid(a, c float64)             // Sigmoid: 1/(1 + exp(-a*(x-c)))
+fuzzy.SigmoidDifference(l, li, r, ri)   // Difference of two sigmoids (bump)
+fuzzy.SigmoidProduct(l, li, r, ri)      // Product of two sigmoids (smooth bump)
+
+// Monotonic
+fuzzy.Ramp(start, end float64)          // Linear ramp: 0→1
+fuzzy.SShape(start, end float64)        // S-shaped growth: quadratic spline
+fuzzy.ZShape(start, end float64)        // Z-shaped decay: quadratic spline
+fuzzy.Concave(start, end float64)       // Concave rise: diminishing returns
+fuzzy.Binary(inflection, direction)     // Threshold: 0/1 based on direction
+
+// Composite
+fuzzy.PiShape(bottom, top, start, end)  // Pi-shaped bump: SShape × ZShape
+fuzzy.Spike(center, width float64)      // Spike: exp(-|x-center|/width)
 ```
 
 #### Operators
 
-**T-Norms (Fuzzy AND):** `MinTNorm`, `ProductTNorm`, `LukasiewiczTNorm`, `MinTNormVariadic`
+**T-Norms (Fuzzy AND — 7 total):** `MinTNorm`, `ProductTNorm`, `LukasiewiczTNorm`, `EinsteinProduct`, `HamacherProduct`, `NilpotentMinimum`, `DrasticProduct`, `MinTNormVariadic`
 
-**T-Conorms (Fuzzy OR):** `MaxTConorm`, `ProbabilisticTConorm`, `LukasiewiczTConorm`, `MaxTConormVariadic`
+**T-Conorms (Fuzzy OR — 9 total):** `MaxTConorm`, `ProbabilisticTConorm`, `LukasiewiczTConorm`, `EinsteinSum`, `HamacherSum`, `NilpotentMaximum`, `DrasticSum`, `NormalizedSum`, `UnboundedSum`, `MaxTConormVariadic`
 
 **Implications:** `GodelImplication`, `GoguenImplication`, `LukasiewiczImplication`, `KleeneDienesImplication`
 
@@ -197,7 +219,9 @@ fuzzy.Laplace(loc, scale float64)      // Laplace distribution
 
 **Hedges:** `Very`, `Somewhat`, `Slightly`, `Extremely`, `Indeed`, `Not`
 
-**Numerical Utilities (from gorgonia):** `Softplus` (stable `log(1+e^x)`), `Softmax`, `LogSoftmax`, `Sparsemax` (sparse probability projection — zeros out low-weight worlds for efficient belief selection)
+**Activation Methods (7 total):** `General`, `Proportional` (softmax-normalize), `Threshold` (6 comparison operators), `First`, `Last`, `Highest`, `Lowest` — pluggable per `RuleBlock`
+
+**Numerical Utilities (from gorgonia):** `Softplus` (stable `log(1+e^x)`), `Softmax`, `LogSoftmax`, `Sparsemax` (sparse probability projection)
 
 #### Defuzzification
 
@@ -274,6 +298,27 @@ result, strategy, _ := arbiter.Select(inputs, pool)
 arbiter.UpdateReliability("tsk", +0.05)
 ```
 
+### RuleBlock & OutputVariable (port from fuzzylite)
+
+```go
+// Each RuleBlock has its own conjunction, disjunction, implication, and activation
+block := fuzzy.NewRuleBlock("safety-rules", 16, pool)
+block.SetConjunction(fuzzy.MinTNorm)
+block.SetImplication(fuzzy.GodelImplication)
+block.SetActivation(fuzzy.NewThresholdActivation(0.3, fuzzy.GreaterThan))
+block.AddRule(*rule)
+
+// OutputVariables have per-variable defuzzification, aggregation, and defaults
+ov := fuzzy.NewOutputVariable(linguisticVar)
+ov.SetDefuzzifier(fuzzy.NewCentroidDefuzzifier())
+ov.SetAggregation(fuzzy.MaxTConorm)
+ov.SetDefaultValue(25.0)
+ov.SetLockValidRange(0, 100)
+
+engine.AddRuleBlock(block)
+engine.AddOutputVariable(ov)
+```
+
 ## Architecture
 
 ```
@@ -305,16 +350,21 @@ sat/
   fuzzy_smt.go        → Fuzzy-SMT gradient-descent solver
   system.go           → core.LogicSystem adapter
 fuzzy/
-  types.go            → TruthValue, VarID, SymbolTable, FuzzySet, LinguisticVar, FuzzyRule
-  membership.go       → Triangular, Trapezoidal, Gaussian, Bell, Sigmoid, Singleton, Laplace
-  operators.go        → T-norms, T-conorms, implications, negation
-  inference.go        → MamdaniEngine, TSKEngine
-  defuzzify.go        → Centroid, MeanOfMax, Bisector, WeightedAverage
-  parser.go           → Fuzzy rule lexer/parser
+  types.go            → TruthValue, VarID, SymbolTable, FuzzySet, LinguisticVar (Pool-backed terms), FuzzyRule (OR antecedents)
+  membership.go       → 20 MFs: Triangular, Trapezoidal, Rectangle, Gaussian, GaussianProduct, Bell, Laplace, Cosine, Sigmoid, SigmoidDifference, SigmoidProduct, Singleton, Discrete, Ramp, SShape, ZShape, Concave, Binary, PiShape, Spike
+  operators.go        → 7 t-norms, 9 t-conorms, 4 implications, negation
+  activation.go       → 7 methods: General, Proportional, Threshold (6 ops), First, Last, Highest, Lowest
+  inference.go        → MamdaniEngine (RuleBlock + OutputVariable), TSKEngine (activation + OR antecedents)
+  ruleblock.go        → RuleBlock: per-block conjunction/disjunction/implication/activation + Pool-backed rules
+  variable.go         → OutputVariable (per-variable defuzzifier/aggregation/default/lock-range), Defuzzifier interface (5 wrappers)
+  defuzzify.go        → Centroid, MeanOfMax, SmallestOfMax, LargestOfMax, Bisector, WeightedAverage
+  math.go             → Softplus, Softmax, LogSoftmax (from gorgonia)
+  sparsemax.go        → Sparsemax: sparse probability projection (from gorgonia)
+  parser.go           → Fuzzy rule lexer/parser (Pool-backed tokens)
   sets.go             → Union, Intersection, Complement, Concentration, Dilation, CartesianProduct
   hedges.go           → Very, Somewhat, Slightly, Extremely, Indeed, Not
   cluster.go          → FCM clustering, Xie-Beni, FPC, optimal cluster count
-  encoding.go         → Population encoder
+  encoding.go         → Population encoder (Pool-backed)
   arbiter.go          → Multi-strategy selection with reliability tracking
   system.go           → core.LogicSystem adapter
 fuzzy/type2/
