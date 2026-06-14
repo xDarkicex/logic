@@ -1,5 +1,9 @@
 package sat
 
+import (
+	"github.com/xDarkicex/memory"
+)
+
 // TrailEntry represents a single assignment in the decision trail
 type TrailEntry struct {
 	Variable string
@@ -14,6 +18,7 @@ type TrailEntry struct {
 type DecisionTrailImpl struct {
 	// Trail entries in chronological order
 	trail []TrailEntry
+	arena *memory.Arena
 
 	// Fast lookup maps for O(1) operations
 	varToIndex  map[string]int // Variable -> index in trail
@@ -31,8 +36,13 @@ type DecisionTrailImpl struct {
 
 // NewDecisionTrail creates a new advanced decision trail (primary constructor)
 func NewDecisionTrail() *DecisionTrailImpl {
+	arena, err := memory.NewArena(8 * 1024 * 1024) // 8MB starting capacity
+	if err != nil {
+		panic(err)
+	}
 	return &DecisionTrailImpl{
-		trail:        make([]TrailEntry, 0, 1000), // Pre-allocate for performance
+		arena:        arena,
+		trail:        memory.MustArenaSlice[TrailEntry](arena, 1000), // Pre-allocate for performance
 		varToIndex:   make(map[string]int),
 		levelStarts:  make(map[int]int),
 		reasons:      make(map[string]*Clause),
@@ -79,7 +89,7 @@ func (t *DecisionTrailImpl) Assign(variable string, value bool, level int, reaso
 	if t.trailSize < len(t.trail) {
 		t.trail[t.trailSize] = entry
 	} else {
-		t.trail = append(t.trail, entry)
+		t.trail = memory.ArenaAppend(t.arena, t.trail, entry)
 	}
 
 	// Update fast lookup maps for O(1) access
@@ -187,6 +197,18 @@ func (t *DecisionTrailImpl) Clear() {
 	}
 
 	// Keep pre-allocated trail slice for reuse
+	if t.arena != nil {
+		t.arena.Reset()
+		t.trail = memory.MustArenaSlice[TrailEntry](t.arena, 1000)
+	}
+}
+
+// Close releases off-heap memory
+func (t *DecisionTrailImpl) Close() {
+	if t.arena != nil {
+		t.arena.Free()
+		t.arena = nil
+	}
 }
 
 // GetTrailAtLevel returns all assignments at given level (advanced feature)

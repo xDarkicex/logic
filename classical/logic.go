@@ -89,113 +89,143 @@ type EvaluationContext map[string]bool
 func (node *ASTNode) Evaluate(ctx EvaluationContext) (bool, error) {
 	switch node.Type {
 	case NodeVariable:
-		if value, exists := ctx[node.Value]; exists {
-			return value, nil
-		}
-		return false, core.NewLogicError("classical", "ASTNode.Evaluate",
-			fmt.Sprintf("undefined variable: %s", node.Value))
-
+		return node.evalVariable(ctx)
 	case NodeConstant:
-		lower := strings.ToLower(node.Value)
-		return lower == "true" || lower == "1" || lower == "t", nil
-
+		return node.evalConstant()
 	case NodeNot:
-		if len(node.Children) != 1 {
-			return false, core.NewLogicError("classical", "ASTNode.Evaluate", "NOT operation requires exactly one operand")
-		}
-		childVal, err := node.Children[0].Evaluate(ctx)
-		if err != nil {
-			return false, err
-		}
-		return Not(childVal), nil
-
+		return node.evalNot(ctx)
 	case NodeAnd:
-		values := make([]bool, len(node.Children))
-		for i, child := range node.Children {
-			val, err := child.Evaluate(ctx)
-			if err != nil {
-				return false, err
-			}
-			values[i] = val
-		}
-		return And(values...), nil
-
+		return node.evalAnd(ctx)
 	case NodeOr:
-		values := make([]bool, len(node.Children))
-		for i, child := range node.Children {
-			val, err := child.Evaluate(ctx)
-			if err != nil {
-				return false, err
-			}
-			values[i] = val
-		}
-		return Or(values...), nil
-
+		return node.evalOr(ctx)
 	case NodeXor:
-		values := make([]bool, len(node.Children))
-		for i, child := range node.Children {
-			val, err := child.Evaluate(ctx)
-			if err != nil {
-				return false, err
-			}
-			values[i] = val
-		}
-		return Xor(values...), nil
-
+		return node.evalXor(ctx)
 	case NodeNand:
-		values := make([]bool, len(node.Children))
-		for i, child := range node.Children {
-			val, err := child.Evaluate(ctx)
-			if err != nil {
-				return false, err
-			}
-			values[i] = val
-		}
-		return Nand(values...), nil
-
+		return node.evalNand(ctx)
 	case NodeNor:
-		values := make([]bool, len(node.Children))
-		for i, child := range node.Children {
-			val, err := child.Evaluate(ctx)
-			if err != nil {
-				return false, err
-			}
-			values[i] = val
-		}
-		return Nor(values...), nil
-
+		return node.evalNor(ctx)
 	case NodeImplies:
-		if len(node.Children) != 2 {
-			return false, core.NewLogicError("classical", "ASTNode.Evaluate", "IMPLIES operation requires exactly two operands")
-		}
-		left, err := node.Children[0].Evaluate(ctx)
-		if err != nil {
-			return false, err
-		}
-		right, err := node.Children[1].Evaluate(ctx)
-		if err != nil {
-			return false, err
-		}
-		return Implies(left, right), nil
-
+		return node.evalImplies(ctx)
 	case NodeIff:
-		if len(node.Children) != 2 {
-			return false, core.NewLogicError("classical", "ASTNode.Evaluate", "IFF operation requires exactly two operands")
-		}
-		left, err := node.Children[0].Evaluate(ctx)
-		if err != nil {
-			return false, err
-		}
-		right, err := node.Children[1].Evaluate(ctx)
-		if err != nil {
-			return false, err
-		}
-		return Iff(left, right), nil
-
+		return node.evalIff(ctx)
 	default:
 		return false, core.NewLogicError("classical", "ASTNode.Evaluate",
 			fmt.Sprintf("unknown node type: %v", node.Type))
 	}
+}
+
+func (node *ASTNode) evalVariable(ctx EvaluationContext) (bool, error) {
+	if value, exists := ctx[node.Value]; exists {
+		return value, nil
+	}
+	return false, core.NewLogicError("classical", "ASTNode.Evaluate",
+		fmt.Sprintf("undefined variable: %s", node.Value))
+}
+
+func (node *ASTNode) evalConstant() (bool, error) {
+	lower := strings.ToLower(node.Value)
+	return lower == "true" || lower == "1" || lower == "t", nil
+}
+
+func (node *ASTNode) evalNot(ctx EvaluationContext) (bool, error) {
+	if len(node.Children) != 1 {
+		return false, core.NewLogicError("classical", "ASTNode.Evaluate", "NOT operation requires exactly one operand")
+	}
+	childVal, err := node.Children[0].Evaluate(ctx)
+	if err != nil {
+		return false, err
+	}
+	return Not(childVal), nil
+}
+
+func (node *ASTNode) evalAnd(ctx EvaluationContext) (bool, error) {
+	values := make([]bool, len(node.Children))
+	for i, child := range node.Children {
+		val, err := child.Evaluate(ctx)
+		if err != nil {
+			return false, err
+		}
+		values[i] = val
+	}
+	return And(values...), nil
+}
+
+func (node *ASTNode) evalOr(ctx EvaluationContext) (bool, error) {
+	values := make([]bool, len(node.Children))
+	for i, child := range node.Children {
+		val, err := child.Evaluate(ctx)
+		if err != nil {
+			return false, err
+		}
+		values[i] = val
+	}
+	return Or(values...), nil
+}
+
+func (node *ASTNode) evalXor(ctx EvaluationContext) (bool, error) {
+	values := make([]bool, len(node.Children))
+	for i, child := range node.Children {
+		val, err := child.Evaluate(ctx)
+		if err != nil {
+			return false, err
+		}
+		values[i] = val
+	}
+	return Xor(values...), nil
+}
+
+func (node *ASTNode) evalNand(ctx EvaluationContext) (bool, error) {
+	values := make([]bool, len(node.Children))
+	for i, child := range node.Children {
+		val, err := child.Evaluate(ctx)
+		if err != nil {
+			return false, err
+		}
+		values[i] = val
+	}
+	return Nand(values...), nil
+}
+
+func (node *ASTNode) evalNor(ctx EvaluationContext) (bool, error) {
+	values := make([]bool, len(node.Children))
+	for i, child := range node.Children {
+		val, err := child.Evaluate(ctx)
+		if err != nil {
+			return false, err
+		}
+		values[i] = val
+	}
+	return Nor(values...), nil
+}
+
+func (node *ASTNode) evalImplies(ctx EvaluationContext) (bool, error) {
+	if len(node.Children) != 2 {
+		return false, core.NewLogicError("classical", "ASTNode.Evaluate", "IMPLIES operation requires exactly two operands")
+	}
+	left, err := node.Children[0].Evaluate(ctx)
+	if err != nil {
+		return false, err
+	}
+	right, err := node.Children[1].Evaluate(ctx)
+	if err != nil {
+		return false, err
+	}
+	return Implies(left, right), nil
+}
+
+func (node *ASTNode) evalIff(ctx EvaluationContext) (bool, error) {
+	if len(node.Children) != 2 {
+		return false, core.NewLogicError("classical", "ASTNode.Evaluate", "IFF operation requires exactly two operands")
+	}
+	left, err := node.Children[0].Evaluate(ctx)
+	if err != nil {
+		return false, err
+	}
+	right, err := node.Children[1].Evaluate(ctx)
+	if err != nil {
+		return false, err
+	}
+	return Iff(left, right), nil
 }
 
 // And performs logical AND operation on multiple boolean values.

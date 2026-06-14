@@ -1,3 +1,11 @@
+// Package logic provides a multi-paradigm logic engine (classical, SAT, etc.).
+//
+// Concurrency Contract:
+// The types and solvers in this package (such as CDCLSolver, SATSystem, etc.)
+// are NOT safe for concurrent use. You must create separate instances of solvers
+// or systems per goroutine if you intend to run them in parallel.
+// Global convenience functions (like SolveSAT) will instantiate internal solvers
+// but are also not inherently thread-safe across the shared DefaultEngine.
 package logic
 
 import (

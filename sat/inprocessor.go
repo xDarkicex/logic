@@ -597,7 +597,7 @@ func (is *InprocessSubsumption) findSubsumptionCandidates(clauses []*Clause) []S
 	is.subsumptionCandidates = is.subsumptionCandidates[:0] // Reuse slice
 
 	for i, clause1 := range clauses {
-		if clause1 == nil || len(clause1.Literals) == 0 {
+		if clause1 == nil || len(clause1.Literals) == 0 || clause1.Deleted {
 			continue
 		}
 
@@ -610,7 +610,7 @@ func (is *InprocessSubsumption) findSubsumptionCandidates(clauses []*Clause) []S
 		candidates := is.findCandidatesForClause(clause1, clauses[i+1:])
 
 		for _, clause2 := range candidates {
-			if clause2 == nil || clause1.ID == clause2.ID {
+			if clause2 == nil || clause2.Deleted || clause1.ID == clause2.ID {
 				continue
 			}
 
@@ -683,7 +683,7 @@ func (is *InprocessSubsumption) findCandidatesForClause(clause *Clause, remainin
 
 // checkSubsumption verifies if clause1 actually subsumes clause2
 func (is *InprocessSubsumption) checkSubsumption(subsumer, subsumed *Clause) bool {
-	if subsumer == nil || subsumed == nil {
+	if subsumer == nil || subsumed == nil || subsumer.Deleted || subsumed.Deleted {
 		return false
 	}
 
@@ -719,13 +719,13 @@ func (is *InprocessSubsumption) performSelfSubsumption(cnf *CNF) int {
 	strengthenedCount := 0
 
 	for i, clause1 := range cnf.Clauses {
-		if clause1 == nil || len(clause1.Literals) <= 1 {
+		if clause1 == nil || len(clause1.Literals) <= 1 || clause1.Deleted {
 			continue
 		}
 
 		for j := i + 1; j < len(cnf.Clauses); j++ {
 			clause2 := cnf.Clauses[j]
-			if clause2 == nil || len(clause2.Literals) <= 1 {
+			if clause2 == nil || len(clause2.Literals) <= 1 || clause2.Deleted {
 				continue
 			}
 
@@ -823,21 +823,17 @@ func (is *InprocessSubsumption) sortCandidatesByStrength() {
 }
 
 func (is *InprocessSubsumption) markForRemoval(cnf *CNF, clause *Clause) {
-	// Simple approach: set clause to nil (will be cleaned up later)
-	for i, c := range cnf.Clauses {
-		if c != nil && c.ID == clause.ID {
-			cnf.Clauses[i] = nil
-			break
-		}
-	}
+	clause.Deleted = true
 }
 
 func (is *InprocessSubsumption) removeMarkedClauses(cnf *CNF) {
-	// Remove nil clauses
+	// Remove and free deleted clauses
 	validClauses := make([]*Clause, 0, len(cnf.Clauses))
 	for _, clause := range cnf.Clauses {
-		if clause != nil {
+		if clause != nil && !clause.Deleted {
 			validClauses = append(validClauses, clause)
+		} else if clause != nil && clause.Deleted {
+			FreeClause(clause)
 		}
 	}
 	cnf.Clauses = validClauses
@@ -983,6 +979,8 @@ func (bve *BoundedVariableElimination) EliminateVariables(cnf *CNF, assignment A
 		if bve.eliminateVariable(candidate.Variable, cnf) {
 			eliminatedCount++
 			bve.eliminatedVars++
+		} else {
+			bve.skippedVariables++
 		}
 	}
 
@@ -994,17 +992,27 @@ func (bve *BoundedVariableElimination) EliminateVariables(cnf *CNF, assignment A
 
 // eliminateVariable performs the actual elimination of a variable
 func (bve *BoundedVariableElimination) eliminateVariable(variable string, cnf *CNF) bool {
-	posOccurrences := bve.positiveOccurrence[variable]
-	negOccurrences := bve.negativeOccurrence[variable]
+	var validPos []*Clause
+	for _, c := range bve.positiveOccurrence[variable] {
+		if c != nil && !c.Deleted {
+			validPos = append(validPos, c)
+		}
+	}
+	var validNeg []*Clause
+	for _, c := range bve.negativeOccurrence[variable] {
+		if c != nil && !c.Deleted {
+			validNeg = append(validNeg, c)
+		}
+	}
 
-	if len(posOccurrences) == 0 || len(negOccurrences) == 0 {
+	if len(validPos) == 0 || len(validNeg) == 0 {
 		// Pure variable - just remove clauses containing it
 		bve.eliminatePureVariable(variable, cnf)
 		return true
 	}
 
 	// Generate all resolvents
-	resolvents := bve.generateResolvents(posOccurrences, negOccurrences, variable)
+	resolvents := bve.generateResolvents(validPos, validNeg, variable)
 
 	// Check if we exceed resolvent limits
 	if len(resolvents) > bve.maxResolvents {
@@ -1016,19 +1024,21 @@ func (bve *BoundedVariableElimination) eliminateVariable(variable string, cnf *C
 
 	// Remove original clauses containing the variable
 	bve.removeClausesContaining(variable, cnf)
-	bve.resolvedClauses += int64(len(posOccurrences) + len(negOccurrences))
+	bve.resolvedClauses += int64(len(validPos) + len(validNeg))
 
 	// Add new resolvent clauses
+	var addedClauses []*Clause
 	for _, resolvent := range filteredResolvents {
 		if len(resolvent.Literals) > 0 && len(resolvent.Literals) <= bve.maxResolventSize {
 			newClause := NewClause(resolvent.Literals...)
 			cnf.AddClause(newClause)
+			addedClauses = append(addedClauses, newClause)
 			bve.addedResolvents++
 		}
 	}
 
 	// Update occurrence lists
-	bve.updateOccurrenceListsAfterElimination(variable, filteredResolvents)
+	bve.updateOccurrenceListsAfterElimination(variable, addedClauses)
 
 	return true
 }
@@ -1233,6 +1243,8 @@ func (bve *BoundedVariableElimination) findEliminationCandidates(variables []str
 				Priority: bve.calculatePriority(posCount, negCount, cost),
 			}
 			bve.eliminationQueue = append(bve.eliminationQueue, candidate)
+		} else {
+			bve.skippedVariables++
 		}
 	}
 
@@ -1406,30 +1418,22 @@ func (bve *BoundedVariableElimination) removeClausesContaining(variable string, 
 
 // removeClauseFromCNF removes a specific clause from the CNF
 func (bve *BoundedVariableElimination) removeClauseFromCNF(cnf *CNF, clauseToRemove *Clause) {
-	for i, clause := range cnf.Clauses {
-		if clause != nil && clause.ID == clauseToRemove.ID {
-			cnf.Clauses[i] = nil // Mark for cleanup
-			break
-		}
-	}
+	clauseToRemove.Deleted = true
 }
 
 // updateOccurrenceListsAfterElimination updates occurrence lists after elimination
-func (bve *BoundedVariableElimination) updateOccurrenceListsAfterElimination(eliminatedVar string, resolvents []ResolventClause) {
+func (bve *BoundedVariableElimination) updateOccurrenceListsAfterElimination(eliminatedVar string, newClauses []*Clause) {
 	// Remove eliminated variable from occurrence lists
 	delete(bve.positiveOccurrence, eliminatedVar)
 	delete(bve.negativeOccurrence, eliminatedVar)
 
 	// Add new resolvents to occurrence lists
-	for _, resolvent := range resolvents {
-		// Create a temporary clause for occurrence tracking
-		tempClause := NewClause(resolvent.Literals...)
-
-		for _, lit := range resolvent.Literals {
+	for _, clause := range newClauses {
+		for _, lit := range clause.Literals {
 			if lit.Negated {
-				bve.negativeOccurrence[lit.Variable] = append(bve.negativeOccurrence[lit.Variable], tempClause)
+				bve.negativeOccurrence[lit.Variable] = append(bve.negativeOccurrence[lit.Variable], clause)
 			} else {
-				bve.positiveOccurrence[lit.Variable] = append(bve.positiveOccurrence[lit.Variable], tempClause)
+				bve.positiveOccurrence[lit.Variable] = append(bve.positiveOccurrence[lit.Variable], clause)
 			}
 		}
 	}
@@ -1437,11 +1441,13 @@ func (bve *BoundedVariableElimination) updateOccurrenceListsAfterElimination(eli
 
 // cleanupEliminatedVariables removes nil clauses and updates variable lists
 func (bve *BoundedVariableElimination) cleanupEliminatedVariables(cnf *CNF) {
-	// Remove nil clauses
+	// Remove and free deleted clauses
 	validClauses := make([]*Clause, 0, len(cnf.Clauses))
 	for _, clause := range cnf.Clauses {
-		if clause != nil {
+		if clause != nil && !clause.Deleted {
 			validClauses = append(validClauses, clause)
+		} else if clause != nil && clause.Deleted {
+			FreeClause(clause)
 		}
 	}
 	cnf.Clauses = validClauses

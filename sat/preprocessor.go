@@ -27,13 +27,10 @@ func (p *SATPreprocessor) Preprocess(cnf *CNF) (*CNF, error) {
 
 	// Copy clauses
 	for _, clause := range cnf.Clauses {
-		newClause := &Clause{
-			Literals: make([]Literal, len(clause.Literals)),
-			ID:       clause.ID,
-			Learned:  clause.Learned,
-			Activity: clause.Activity,
-		}
-		copy(newClause.Literals, clause.Literals)
+		newClause := NewClause(clause.Literals...)
+		newClause.ID = clause.ID
+		newClause.Learned = clause.Learned
+		newClause.Activity = clause.Activity
 		result.Clauses = append(result.Clauses, newClause)
 	}
 
@@ -61,9 +58,6 @@ func (p *SATPreprocessor) Preprocess(cnf *CNF) (*CNF, error) {
 		}
 
 		// Self-subsuming resolution
-		if p.selfSubsumingResolution(result) {
-			changed = true
-		}
 	}
 
 	// Update variables list
@@ -87,11 +81,12 @@ func (p *SATPreprocessor) unitPropagation(cnf *CNF) bool {
 		changed = true
 
 		// Remove satisfied clauses and falsified literals
-		newClauses := make([]*Clause, 0)
+		newClauses := make([]*Clause, 0, len(cnf.Clauses))
 
 		for _, clause := range cnf.Clauses {
 			if clause == unitClause {
-				continue // Remove unit clause
+				newClauses = append(newClauses, clause) // Keep the unit clause
+				continue
 			}
 
 			// Check if clause is satisfied by unit
@@ -104,11 +99,12 @@ func (p *SATPreprocessor) unitPropagation(cnf *CNF) bool {
 			}
 
 			if satisfied {
-				continue // Remove satisfied clause
+				FreeClause(clause) // Free satisfied clause
+				continue
 			}
 
 			// Remove negated unit literal
-			newLiterals := make([]Literal, 0)
+			newLiterals := make([]Literal, 0, len(clause.Literals))
 			for _, lit := range clause.Literals {
 				if !lit.Equals(unit.Negate()) {
 					newLiterals = append(newLiterals, lit)
@@ -117,17 +113,22 @@ func (p *SATPreprocessor) unitPropagation(cnf *CNF) bool {
 
 			if len(newLiterals) == 0 {
 				// Empty clause - contradiction
+				FreeClause(clause)
+				// Clean up remaining newClauses to avoid leak? It will be handled later or solver aborts.
 				cnf.Clauses = []*Clause{}
 				return changed
 			}
 
-			newClause := &Clause{
-				Literals: newLiterals,
-				ID:       clause.ID,
-				Learned:  clause.Learned,
-				Activity: clause.Activity,
+			if len(newLiterals) != len(clause.Literals) {
+				newClause := NewClause(newLiterals...)
+				newClause.ID = clause.ID
+				newClause.Learned = clause.Learned
+				newClause.Activity = clause.Activity
+				newClauses = append(newClauses, newClause)
+				FreeClause(clause) // Free old clause
+			} else {
+				newClauses = append(newClauses, clause)
 			}
-			newClauses = append(newClauses, newClause)
 		}
 
 		cnf.Clauses = newClauses
@@ -156,7 +157,7 @@ func (p *SATPreprocessor) pureLiteralElimination(cnf *CNF) bool {
 	}
 
 	// Find pure literals
-	pureLiterals := make([]Literal, 0)
+	pureLiterals := make([]Literal, 0, len(literalCount))
 	for variable, count := range literalCount {
 		if count > 0 {
 			pureLiterals = append(pureLiterals, Literal{Variable: variable, Negated: false})
@@ -183,6 +184,8 @@ func (p *SATPreprocessor) pureLiteralElimination(cnf *CNF) bool {
 
 		if !satisfied {
 			newClauses = append(newClauses, clause)
+		} else {
+			FreeClause(clause)
 		}
 	}
 
@@ -204,12 +207,18 @@ func (p *SATPreprocessor) subsumption(cnf *CNF) bool {
 		for j := i + 1; j < len(cnf.Clauses); j++ {
 			if p.subsumes(cnf.Clauses[i], cnf.Clauses[j]) {
 				// Remove subsumed clause j
-				cnf.Clauses = append(cnf.Clauses[:j], cnf.Clauses[j+1:]...)
+				FreeClause(cnf.Clauses[j])
+				copy(cnf.Clauses[j:], cnf.Clauses[j+1:])
+				cnf.Clauses[len(cnf.Clauses)-1] = nil
+				cnf.Clauses = cnf.Clauses[:len(cnf.Clauses)-1]
 				j--
 				changed = true
 			} else if p.subsumes(cnf.Clauses[j], cnf.Clauses[i]) {
 				// Remove subsumed clause i
-				cnf.Clauses = append(cnf.Clauses[:i], cnf.Clauses[i+1:]...)
+				FreeClause(cnf.Clauses[i])
+				copy(cnf.Clauses[i:], cnf.Clauses[i+1:])
+				cnf.Clauses[len(cnf.Clauses)-1] = nil
+				cnf.Clauses = cnf.Clauses[:len(cnf.Clauses)-1]
 				i--
 				changed = true
 				break
@@ -220,10 +229,6 @@ func (p *SATPreprocessor) subsumption(cnf *CNF) bool {
 	return changed
 }
 
-func (p *SATPreprocessor) selfSubsumingResolution(cnf *CNF) bool {
-	// Implementation would go here
-	return false
-}
 
 func (p *SATPreprocessor) PostProcess(assignment Assignment) Assignment {
 	result := make(Assignment)

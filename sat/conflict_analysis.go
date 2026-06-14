@@ -35,8 +35,8 @@ type ResolutionStep struct {
 func NewFirstUIPAnalyzer() *FirstUIPAnalyzer {
 	return &FirstUIPAnalyzer{
 		seen:            make(map[string]bool),
-		conflictSide:    make([]string, 0),
-		resolutionStack: make([]ResolutionStep, 0),
+		conflictSide:    make([]string, 0, 32),
+		resolutionStack: make([]ResolutionStep, 0, 32),
 		levelsSeen:      make(map[int]bool),
 	}
 }
@@ -151,7 +151,7 @@ func (f *FirstUIPAnalyzer) Analyze(conflictClause *Clause, trail DecisionTrail) 
 
 // resolveWithLBDTracking performs resolution between current learnt clause and reason clause with LBD tracking
 func (f *FirstUIPAnalyzer) resolveWithLBDTracking(learntClause []Literal, reasonClause *Clause, resolveVar string, trail DecisionTrail) []Literal {
-	newClause := make([]Literal, 0)
+	newClause := make([]Literal, 0, len(learntClause)+len(reasonClause.Literals))
 
 	// Add literals from learnt clause (except resolved variable)
 	for _, lit := range learntClause {
@@ -215,7 +215,7 @@ func (f *FirstUIPAnalyzer) getTrailEntriesAtLevel(trail DecisionTrail, level int
 
 	// Fallback implementation
 	assignment := trail.GetAssignment()
-	entries := make([]TrailEntry, 0)
+	entries := make([]TrailEntry, 0, 32)
 
 	for variable := range assignment {
 		if trail.GetLevel(variable) == level {

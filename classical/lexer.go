@@ -4,6 +4,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/xDarkicex/memory"
 )
 
 // TokenType represents different types of tokens in logical expressions
@@ -74,14 +76,36 @@ type Lexer struct {
 	input    string
 	position int
 	tokens   []Token
+	pool     *memory.Pool
 }
 
 // NewLexer creates a new lexer for the given input
-func NewLexer(input string) *Lexer {
-	return &Lexer{
+func NewLexer(input string, pool *memory.Pool) *Lexer {
+	lexer := &Lexer{
 		input:  input,
-		tokens: make([]Token, 0),
+		pool:   pool,
 	}
+	if pool != nil {
+		lexer.tokens = memory.MustPoolSlice[Token](pool, 0)
+	} else {
+		lexer.tokens = make([]Token, 0)
+	}
+	return lexer
+}
+
+// appendToken adds a token, expanding the slice off-heap if backed by a memory pool
+func (l *Lexer) appendToken(token Token) {
+	if l.pool != nil {
+		if len(l.tokens) == cap(l.tokens) {
+			newCap := cap(l.tokens) * 2
+			if newCap == 0 {
+				newCap = 16
+			}
+			newSlice := memory.MustPoolSlice[Token](l.pool, newCap)
+			l.tokens = append(newSlice, l.tokens...)
+		}
+	}
+	l.tokens = append(l.tokens, token)
 }
 
 // Lex tokenizes the input and returns all tokens
@@ -93,14 +117,14 @@ func (l *Lexer) Lex() []Token {
 		}
 
 		token := l.nextToken()
-		l.tokens = append(l.tokens, token)
+		l.appendToken(token)
 
 		if token.Type == TokenError {
 			break
 		}
 	}
 
-	l.tokens = append(l.tokens, Token{Type: TokenEOF, Position: l.position})
+	l.appendToken(Token{Type: TokenEOF, Position: l.position})
 	return l.tokens
 }
 

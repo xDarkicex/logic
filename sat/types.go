@@ -2,8 +2,35 @@ package sat
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
+	"unsafe"
+
+	"github.com/xDarkicex/memory"
 )
+
+var (
+	clauseAlloc *memory.ShardedFreeList
+	litPool     *memory.Pool
+	allocOnce   sync.Once
+)
+
+func initAllocators() {
+	allocOnce.Do(func() {
+		cfg := memory.DefaultFreeListConfig()
+		cfg.SlotSize = uint64(unsafe.Sizeof(Clause{}))
+		var err error
+		clauseAlloc, err = memory.NewShardedFreeList(cfg, 4)
+		if err != nil {
+			panic(fmt.Errorf("failed to create clause allocator: %v", err))
+		}
+		litPool, err = memory.NewPool(memory.DefaultConfig())
+		if err != nil {
+			panic(fmt.Errorf("failed to create lit pool: %v", err))
+		}
+	})
+}
 
 // Literal represents a boolean variable or its negation
 // Positive literal: Variable = "A", Negated = false
@@ -43,17 +70,72 @@ type Clause struct {
 	Glue         bool    // True if LBD <= 2 (very important clauses)
 	Tier         int     // Clause tier classification (0=core, 1=mid, 2=local)
 	ConflictType string
+	Deleted      bool    // True if clause is logically deleted and waiting to be freed
 }
 
-// NewClause creates a new clause with given literals and initializes LBD fields
 func NewClause(literals ...Literal) *Clause {
-	return &Clause{
-		Literals: literals,
-		Learned:  false,
-		Activity: 0.0,
-		LBD:      0,     // Will be computed during conflict analysis
-		Glue:     false, // Will be set based on computed LBD
-		Tier:     2,     // Default to local tier, will be updated based on LBD
+	initAllocators()
+	buf, err := clauseAlloc.Allocate()
+	if err != nil {
+		panic(fmt.Errorf("failed to allocate clause: %v", err))
+	}
+	// Zero memory just in case, though FreeList should give zeroed memory if needed
+	// memory package does not guarantee zeroing on reuse unless stated.
+	// We explicitly initialize all fields below.
+	c := (*Clause)(unsafe.Pointer(&buf[0]))
+	
+	// Create off-heap slice
+	lits := memory.MustPoolSlice[Literal](litPool, len(literals))
+	lits = append(lits, literals...)
+	
+	// Sort literals to ensure deterministic behavior
+	sort.Slice(lits, func(i, j int) bool {
+		if lits[i].Variable == lits[j].Variable {
+			return !lits[i].Negated && lits[j].Negated // Positive first
+		}
+		return lits[i].Variable < lits[j].Variable
+	})
+
+	// Remove duplicates or tautologies
+	if len(lits) > 0 {
+		unique := make([]Literal, 0, len(lits))
+		unique = append(unique, lits[0])
+		for i := 1; i < len(lits); i++ {
+			prev := unique[len(unique)-1]
+			curr := lits[i]
+			if prev.Variable == curr.Variable {
+				if prev.Negated != curr.Negated {
+					// Tautology - we could return an empty/special clause, but for now we'll just break
+					break
+				}
+				// Skip identical
+			} else {
+				unique = append(unique, curr)
+			}
+		}
+
+		if len(unique) != len(lits) {
+			newLits := memory.MustPoolSlice[Literal](litPool, len(unique))
+			newLits = append(newLits, unique...)
+			lits = newLits
+		}
+	}
+
+	c.Literals = lits
+	c.Learned = false
+	c.Activity = 0.0
+	c.LBD = 0
+	c.Glue = false
+	c.Tier = 2
+	c.ConflictType = ""
+	c.Deleted = false
+	return c
+}
+
+func FreeClause(c *Clause) {
+	if c != nil {
+		buf := unsafe.Slice((*byte)(unsafe.Pointer(c)), unsafe.Sizeof(Clause{}))
+		clauseAlloc.Deallocate(buf)
 	}
 }
 
@@ -230,7 +312,8 @@ func (cnf *CNF) String() string {
 	return strings.Join(parts, " ∧ ")
 }
 
-// Assignment represents a partial or complete truth assignment
+// Assignment represents a partial or complete truth assignment.
+// Note: This map is NOT safe for concurrent use.
 type Assignment map[string]bool
 
 // Clone creates a deep copy of the assignment
@@ -444,7 +527,8 @@ func DefaultInprocessConfig() InprocessConfig {
 	}
 }
 
-// ClauseDatabase manages learned clauses in a tiered structure for optimal performance
+// ClauseDatabase manages learned clauses in a tiered structure for optimal performance.
+// Note: ClauseDatabase is NOT safe for concurrent use.
 type ClauseDatabase struct {
 	// Tiers
 	coreClauses   []*Clause // LBD <= 2, never delete

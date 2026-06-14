@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/xDarkicex/logic/core"
+	"github.com/xDarkicex/memory"
 )
 
 // Parser implements recursive descent parsing for logical expressions
@@ -14,7 +15,13 @@ type Parser struct {
 
 // ParseExpression parses a logical expression string into an AST
 func ParseExpression(expr string) (*ASTNode, error) {
-	lexer := NewLexer(expr)
+	pool, err := memory.NewPool(memory.DefaultConfig())
+	if err != nil {
+		return nil, fmt.Errorf("failed to create memory pool for lexer: %v", err)
+	}
+	defer pool.Free()
+
+	lexer := NewLexer(expr, pool)
 	tokens := lexer.Lex()
 
 	// Check for lexical errors

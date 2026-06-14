@@ -422,7 +422,7 @@ func (a *ActivityBasedDeletion) ShouldDeleteFromTier(clause *Clause, tier int, s
 	}
 
 	// Core protection or glue/LBD<=2
-	if a.coreProtection || clause.Glue || clause.LBD <= 2 || tier == 0 {
+	if (a.coreProtection && tier == 0) || clause.Glue || clause.LBD <= 2 || tier == 0 {
 		return false
 	}
 
