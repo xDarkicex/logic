@@ -43,7 +43,7 @@ func TestANFISTrain(t *testing.T) {
 	net := NewANFIS(pool)
 
 	// Setup Variable
-	v := fuzzy.NewLinguisticVar(1)
+	v := fuzzy.NewLinguisticVar(1, pool)
 	
 	// Term 10 (Gaussian around 20)
 	fs := fuzzy.NewFuzzySet(10, nil, pool)

@@ -197,6 +197,8 @@ fuzzy.Laplace(loc, scale float64)      // Laplace distribution
 
 **Hedges:** `Very`, `Somewhat`, `Slightly`, `Extremely`, `Indeed`, `Not`
 
+**Numerical Utilities (from gorgonia):** `Softplus` (stable `log(1+e^x)`), `Softmax`, `LogSoftmax`, `Sparsemax` (sparse probability projection — zeros out low-weight worlds for efficient belief selection)
+
 #### Defuzzification
 
 | Method | Function |

@@ -15,7 +15,7 @@ func TestSystemBasic(t *testing.T) {
 	sym := NewSymbolTable(arena)
 
 	engine := NewMamdaniEngine(pool)
-	v := NewLinguisticVar(sym.Register("Temp", arena))
+	v := NewLinguisticVar(sym.Register("Temp", arena), pool)
 	fs := NewFuzzySet(sym.Register("Hot", arena), nil, pool)
 	fs.Func = Gaussian(100.0, 10.0) // Peak at 100
 	v.AddTerm(sym.Register("Hot", arena), fs)

@@ -15,7 +15,7 @@ func SHAPExtractor(importances map[fuzzy.VarID]float64, pool *memory.Pool) *fuzz
 	engine := fuzzy.NewMamdaniEngine(pool)
 	
 	// Create output variable
-	outVar := fuzzy.NewLinguisticVar(OutputVarID)
+	outVar := fuzzy.NewLinguisticVar(OutputVarID, pool)
 	outFsHigh := fuzzy.NewFuzzySet(1, nil, pool)
 	outFsHigh.Func = fuzzy.Gaussian(1.0, 0.2) // "High Impact"
 	outVar.AddTerm(1, outFsHigh)
@@ -24,7 +24,7 @@ func SHAPExtractor(importances map[fuzzy.VarID]float64, pool *memory.Pool) *fuzz
 	// Create a rule for each feature
 	for vID, imp := range importances {
 		// Create input linguistic variable
-		inVar := fuzzy.NewLinguisticVar(vID)
+		inVar := fuzzy.NewLinguisticVar(vID, pool)
 		
 		// Create "High" term based on importance.
 		// Higher importance -> narrower sigma (more specific rule)
@@ -63,7 +63,7 @@ func GNNExtractor(nodes []fuzzy.VarID, edges map[fuzzy.VarID][]fuzzy.VarID, pool
 
 	// Register all nodes as variables with a default "Active" term
 	for _, nodeID := range nodes {
-		v := fuzzy.NewLinguisticVar(nodeID)
+		v := fuzzy.NewLinguisticVar(nodeID, pool)
 		fs := fuzzy.NewFuzzySet(1, nil, pool)
 		fs.Func = fuzzy.Singleton(1.0) // "Active"
 		v.AddTerm(1, fs)

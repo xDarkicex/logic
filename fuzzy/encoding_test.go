@@ -2,22 +2,30 @@ package fuzzy
 
 import (
 	"testing"
+
+	"github.com/xDarkicex/memory"
 )
 
 func TestPopulationEncoder(t *testing.T) {
+	pool, err := memory.NewPool(memory.DefaultConfig())
+	if err != nil {
+		t.Fatalf("failed to create pool: %v", err)
+	}
+	defer pool.Free()
+
 	// n <= 0
-	funcs := PopulationEncoder(0, 0, 100)
+	funcs := PopulationEncoder(0, 0, 100, pool)
 	if len(funcs) != 0 {
 		t.Errorf("Expected 0 funcs, got %d", len(funcs))
 	}
 
-	funcs = PopulationEncoder(-1, 0, 100)
+	funcs = PopulationEncoder(-1, 0, 100, pool)
 	if len(funcs) != 0 {
 		t.Errorf("Expected 0 funcs, got %d", len(funcs))
 	}
 
 	// n == 1
-	funcs = PopulationEncoder(1, 0, 100)
+	funcs = PopulationEncoder(1, 0, 100, pool)
 	if len(funcs) != 1 {
 		t.Fatalf("Expected 1 func, got %d", len(funcs))
 	}
@@ -29,7 +37,7 @@ func TestPopulationEncoder(t *testing.T) {
 	// n == 5
 	// min=0, max=100. Step = 100 / 4 = 25
 	// Peaks at: 0, 25, 50, 75, 100
-	funcs = PopulationEncoder(5, 0, 100)
+	funcs = PopulationEncoder(5, 0, 100, pool)
 	if len(funcs) != 5 {
 		t.Fatalf("Expected 5 funcs, got %d", len(funcs))
 	}

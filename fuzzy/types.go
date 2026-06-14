@@ -221,37 +221,62 @@ func (fs *FuzzySet) Cardinality() float64 {
 	return sum
 }
 
-// LinguisticVar maps linguistic terms to fuzzy sets.
-type LinguisticVar struct {
-	ID    VarID
-	Terms map[VarID]*FuzzySet
+// termEntry is a Pool-backed term-to-set mapping.
+type termEntry struct {
+	id  VarID
+	set *FuzzySet
 }
 
-// NewLinguisticVar creates a new LinguisticVar.
-func NewLinguisticVar(id VarID) *LinguisticVar {
+// LinguisticVar maps linguistic terms to fuzzy sets via Pool-backed slice.
+// Linear scan for lookups (term count is always small: 3-10 per variable).
+// If Enabled is false, the variable is excluded from evaluation.
+type LinguisticVar struct {
+	ID      VarID
+	terms   []termEntry // Pool-backed
+	Enabled bool
+}
+
+// NewLinguisticVar creates a new LinguisticVar (enabled by default).
+// An initial term capacity is allocated from the pool.
+func NewLinguisticVar(id VarID, pool *memory.Pool) *LinguisticVar {
+	t := memory.MustPoolSlice[termEntry](pool, 8)
+	t = t[:0]
 	return &LinguisticVar{
-		ID:    id,
-		Terms: make(map[VarID]*FuzzySet),
+		ID:      id,
+		terms:   t,
+		Enabled: true,
 	}
 }
 
+// Enable sets the variable as enabled.
+func (lv *LinguisticVar) Enable() { lv.Enabled = true }
+
+// Disable sets the variable as disabled.
+func (lv *LinguisticVar) Disable() { lv.Enabled = false }
+
 // AddTerm adds a term to the variable.
 func (lv *LinguisticVar) AddTerm(id VarID, set *FuzzySet) {
-	lv.Terms[id] = set
+	lv.terms = append(lv.terms, termEntry{id: id, set: set})
 }
 
 // Fuzzify evaluates a crisp value against all terms.
+// Returns a Pool-backed slice of (VarID, TruthValue) pairs instead of a map.
 func (lv *LinguisticVar) Fuzzify(x float64) map[VarID]TruthValue {
-	res := make(map[VarID]TruthValue, len(lv.Terms))
-	for id, set := range lv.Terms {
-		res[id] = set.Membership(x)
+	res := make(map[VarID]TruthValue, len(lv.terms))
+	for _, e := range lv.terms {
+		res[e.id] = e.set.Membership(x)
 	}
 	return res
 }
 
-// GetTerm retrieves a term by ID.
+// GetTerm retrieves a term by ID via linear scan.
 func (lv *LinguisticVar) GetTerm(id VarID) *FuzzySet {
-	return lv.Terms[id]
+	for _, e := range lv.terms {
+		if e.id == id {
+			return e.set
+		}
+	}
+	return nil
 }
 
 // FuzzyCondition represents a condition in a rule antecedent or consequent.
@@ -262,8 +287,13 @@ type FuzzyCondition struct {
 }
 
 // FuzzyRule represents a fuzzy logic rule.
+// Antecedents are ANDed together. OrGroups provide OR-of-ANDs semantics:
+// each inner slice is ANDed, then all groups are ORed, then the result is
+// ANDed with Antecedents. If OrGroups is empty, only Antecedents is used.
+// This matches fuzzylite's Rule/Antecedent expression tree in DNF form.
 type FuzzyRule struct {
 	Antecedents []FuzzyCondition
+	OrGroups    [][]FuzzyCondition // OR-of-ANDs groups
 	Consequent  FuzzyCondition
 	Weight      TruthValue
 }
@@ -275,13 +305,19 @@ func NewFuzzyRule(weight TruthValue) *FuzzyRule {
 	}
 }
 
-// AddAntecedent adds a condition to the rule.
+// AddAntecedent adds an AND condition to the rule.
 func (fr *FuzzyRule) AddAntecedent(variable, term VarID, negated bool) {
 	fr.Antecedents = append(fr.Antecedents, FuzzyCondition{
 		Variable: variable,
 		Term:     term,
 		Negated:  negated,
 	})
+}
+
+// AddOrGroup adds a disjunctive group of ANDed conditions.
+// Multiple OrGroups are ORed together (DNF: OR of ANDs).
+func (fr *FuzzyRule) AddOrGroup(conditions ...FuzzyCondition) {
+	fr.OrGroups = append(fr.OrGroups, conditions)
 }
 
 // SetConsequent sets the consequent condition.

@@ -43,30 +43,23 @@ type Lexer struct {
 	pool     *memory.Pool
 }
 
-// NewLexer creates a new Lexer.
+// NewLexer creates a new Lexer. pool must be non-nil.
 func NewLexer(input string, pool *memory.Pool) *Lexer {
-	lexer := &Lexer{
-		input: input,
-		pool:  pool,
+	return &Lexer{
+		input:  input,
+		pool:   pool,
+		tokens: memory.MustPoolSlice[Token](pool, 0),
 	}
-	if pool != nil {
-		lexer.tokens = memory.MustPoolSlice[Token](pool, 0)
-	} else {
-		lexer.tokens = make([]Token, 0)
-	}
-	return lexer
 }
 
 func (l *Lexer) appendToken(t Token) {
-	if l.pool != nil {
-		if len(l.tokens) == cap(l.tokens) {
-			newCap := cap(l.tokens) * 2
-			if newCap == 0 {
-				newCap = 16
-			}
-			newSlice := memory.MustPoolSlice[Token](l.pool, newCap)
-			l.tokens = append(newSlice, l.tokens...)
+	if len(l.tokens) == cap(l.tokens) {
+		newCap := cap(l.tokens) * 2
+		if newCap == 0 {
+			newCap = 16
 		}
+		newSlice := memory.MustPoolSlice[Token](l.pool, newCap)
+		l.tokens = append(newSlice, l.tokens...)
 	}
 	l.tokens = append(l.tokens, t)
 }

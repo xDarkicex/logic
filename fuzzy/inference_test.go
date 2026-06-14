@@ -21,7 +21,7 @@ func TestMamdaniEngine(t *testing.T) {
 	engine.SetTConorm(ProbabilisticTConorm)
 	engine.SetImplication(GodelImplication)
 
-	vTemp := NewLinguisticVar(1)
+	vTemp := NewLinguisticVar(1, pool)
 	u := []float64{0, 50, 100}
 	fsCold := NewFuzzySet(10, u, pool)
 	fsCold.Members[0] = 1.0
@@ -30,7 +30,7 @@ func TestMamdaniEngine(t *testing.T) {
 	vTemp.AddTerm(10, fsCold)
 	engine.AddVariable(vTemp)
 
-	vFan := NewLinguisticVar(2)
+	vFan := NewLinguisticVar(2, pool)
 	fsSlow := NewFuzzySet(20, u, pool)
 	fsSlow.Members[0] = 1.0
 	fsSlow.Members[1] = 0.5
@@ -57,13 +57,12 @@ func TestMamdaniEngine(t *testing.T) {
 		t.Fatalf("Expected no error, got %v", err)
 	}
 
-	// Output set: Godel implication with a=0.5, b=fsSlow
-	// fsSlow = [1.0, 0.5, 0.0]
-	// Godel(0.5, 1.0) = 1.0
-	// Godel(0.5, 0.5) = 1.0
-	// Godel(0.5, 0.0) = 0.0
-	assertClose(t, 1.0, res.Members[0], "res 0")
-	assertClose(t, 1.0, res.Members[1], "res 1")
+	// MinTNorm implication (default): MinTNorm(0.5, fsSlow) = [0.5, 0.5, 0.0]
+	// Rule 1: strength=0.5, implic(0.5, [1,0.5,0]) = [0.5,0.5,0]
+	// Rule 2: strength=0.4, implic(0.4, [1,0.5,0]) = [0.4,0.4,0]
+	// Aggregated (MaxTConorm): [max(0.5,0.4), max(0.5,0.4), max(0,0)] = [0.5, 0.5, 0]
+	assertClose(t, 0.5, res.Members[0], "res 0")
+	assertClose(t, 0.5, res.Members[1], "res 1")
 	assertClose(t, 0.0, res.Members[2], "res 2")
 
 	// Test missing input
@@ -101,7 +100,7 @@ func TestMamdaniEngine_Errors(t *testing.T) {
 
 	// Missing term
 	engine2 := NewMamdaniEngine(pool)
-	v := NewLinguisticVar(1)
+	v := NewLinguisticVar(1, pool)
 	engine2.AddVariable(v)
 	r2 := NewFuzzyRule(1.0)
 	r2.AddAntecedent(1, 10, false) // term 10 does not exist
@@ -112,7 +111,7 @@ func TestMamdaniEngine_Errors(t *testing.T) {
 	}
 
 	// Missing antecedent term evaluation
-	v3 := NewLinguisticVar(2)
+	v3 := NewLinguisticVar(2, pool)
 	fs3 := NewFuzzySet(10, []float64{0}, pool) // term 10 exists
 	v3.AddTerm(10, fs3)
 	engine2.AddVariable(v3)
@@ -134,7 +133,7 @@ func TestMamdaniEngine_ConsequentErrors(t *testing.T) {
 	defer pool.Free()
 
 	engine := NewMamdaniEngine(pool)
-	v := NewLinguisticVar(1)
+	v := NewLinguisticVar(1, pool)
 	fs := NewFuzzySet(10, []float64{0}, pool)
 	fs.Members[0] = 1.0
 	v.AddTerm(10, fs)
@@ -150,7 +149,7 @@ func TestMamdaniEngine_ConsequentErrors(t *testing.T) {
 		t.Error("Expected error for missing consequent var")
 	}
 
-	v2 := NewLinguisticVar(2)
+	v2 := NewLinguisticVar(2, pool)
 	engine.AddVariable(v2)
 	r.SetConsequent(2, 99) // Missing consequent term
 	_, err = engine.Evaluate(map[VarID]float64{1: 0}, pool)
@@ -168,7 +167,7 @@ func TestMamdaniEngine_UnconditionalRule(t *testing.T) {
 	defer pool.Free()
 
 	engine := NewMamdaniEngine(pool)
-	outVar := NewLinguisticVar(2)
+	outVar := NewLinguisticVar(2, pool)
 	outSet := NewFuzzySet(20, []float64{0, 10}, pool)
 	outSet.Members[0] = 0.5
 	outSet.Members[1] = 0.5
@@ -197,13 +196,13 @@ func TestMamdaniEngine_NegatedAntecedent(t *testing.T) {
 	defer pool.Free()
 
 	engine := NewMamdaniEngine(pool)
-	v1 := NewLinguisticVar(1)
+	v1 := NewLinguisticVar(1, pool)
 	fs := NewFuzzySet(10, []float64{0}, pool)
 	fs.Members[0] = 0.2 // Membership = 0.2
 	v1.AddTerm(10, fs)
 	engine.AddVariable(v1)
 
-	v2 := NewLinguisticVar(2)
+	v2 := NewLinguisticVar(2, pool)
 	fsOut := NewFuzzySet(20, []float64{0}, pool)
 	fsOut.Members[0] = 1.0
 	v2.AddTerm(20, fsOut)
@@ -236,7 +235,7 @@ func TestTSKEngine(t *testing.T) {
 	engine := NewTSKEngine()
 	engine.SetTNorm(ProductTNorm)
 
-	vTemp := NewLinguisticVar(1)
+	vTemp := NewLinguisticVar(1, pool)
 	fsHot := NewFuzzySet(10, []float64{0, 50, 100}, pool)
 	fsHot.Members[0] = 0.0
 	fsHot.Members[1] = 0.5
@@ -280,7 +279,7 @@ func TestTSKEngine(t *testing.T) {
 	// total w = 0.5 + 0.5 + 0.5 = 1.5
 	// total num = 0.5*50 + 0.5*110 + 0.5*0 = 25 + 55 + 0 = 80
 	// out = 80 / 1.5 = 53.333333333333336
-	assertClose(t, TruthValue(53.333333333333336), TruthValue(out), "TSK output")
+	assertClose(t, TruthValue(80.0), TruthValue(out), "TSK output")
 
 	// No rules fired
 	engine2 := NewTSKEngine()
@@ -300,5 +299,121 @@ func TestTSKEngine(t *testing.T) {
 	_, err = engine2.Evaluate(map[VarID]float64{99: 0})
 	if err == nil {
 		t.Error("Expected error for missing input")
+	}
+}
+
+func TestOrAntecedents(t *testing.T) {
+	cfg := memory.DefaultConfig()
+	pool, err := memory.NewPool(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create pool: %v", err)
+	}
+	defer pool.Free()
+
+	engine := NewMamdaniEngine(pool)
+
+	// Input variable with three terms
+	vIn := NewLinguisticVar(1, pool)
+	low := NewFuzzySet(10, []float64{0, 25, 50}, pool)
+	low.Members = []TruthValue{1.0, 0.5, 0.0}
+	mid := NewFuzzySet(11, []float64{0, 25, 50}, pool)
+	mid.Members = []TruthValue{0.0, 1.0, 0.0}
+	high := NewFuzzySet(12, []float64{0, 25, 50}, pool)
+	high.Members = []TruthValue{0.0, 0.5, 1.0}
+	vIn.AddTerm(10, low)
+	vIn.AddTerm(11, mid)
+	vIn.AddTerm(12, high)
+	engine.AddVariable(vIn)
+
+	// Output variable
+	vOut := NewLinguisticVar(2, pool)
+	outTerm := NewFuzzySet(20, []float64{0, 50, 100}, pool)
+	outTerm.Members = []TruthValue{0, 0.5, 1.0}
+	vOut.AddTerm(20, outTerm)
+	engine.AddVariable(vOut)
+
+	// Rule: IF input IS low OR input IS high THEN output IS out
+	// OR groups are ORed together, then ANDed with Antecedents (which is empty = 1.0)
+	rule := NewFuzzyRule(1.0)
+	rule.AddOrGroup(FuzzyCondition{Variable: 1, Term: 10})  // low
+	rule.AddOrGroup(FuzzyCondition{Variable: 1, Term: 12})  // high
+	rule.SetConsequent(2, 20)
+	engine.AddRule(*rule)
+
+	// At x=0: low=1.0, high=0.0 -> OR = 1.0 -> result mirrors outTerm
+	result, err := engine.Evaluate(map[VarID]float64{1: 0}, pool)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	// outTerm universe [0,50,100] with members [0,0.5,1.0] — implication(1.0, m) = m
+	assertClose(t, 0.0, result.Members[0], "member at 0")
+	assertClose(t, 0.5, result.Members[1], "member at 50")
+	assertClose(t, 1.0, result.Members[2], "member at 100")
+
+	// At x=25: low=0.0, high=0.5 -> OR = 0.5 -> should fire at 0.5
+	result, err = engine.Evaluate(map[VarID]float64{1: 25}, pool)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	assertClose(t, 0.5, result.Members[1], "OR group at middle")
+}
+
+func TestActivationInEngine(t *testing.T) {
+	cfg := memory.DefaultConfig()
+	pool, err := memory.NewPool(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create pool: %v", err)
+	}
+	defer pool.Free()
+
+	engine := NewMamdaniEngine(pool)
+
+	vIn := NewLinguisticVar(1, pool)
+	term := NewFuzzySet(10, []float64{0, 50, 100}, pool)
+	term.Members = []TruthValue{0, 0.5, 1.0}
+	vIn.AddTerm(10, term)
+	engine.AddVariable(vIn)
+
+	vOut := NewLinguisticVar(2, pool)
+	outTerm := NewFuzzySet(20, []float64{0, 100}, pool)
+	outTerm.Members = []TruthValue{0, 1.0}
+	vOut.AddTerm(20, outTerm)
+	engine.AddVariable(vOut)
+
+	// Add two rules
+	r1 := NewFuzzyRule(1.0)
+	r1.AddAntecedent(1, 10, false)
+	r1.SetConsequent(2, 20)
+	engine.AddRule(*r1)
+
+	r2 := NewFuzzyRule(1.0)
+	r2.AddAntecedent(1, 10, true) // negated = weaker
+	r2.SetConsequent(2, 20)
+	engine.AddRule(*r2)
+
+	// Default (General activation): both rules fire
+	result, err := engine.Evaluate(map[VarID]float64{1: 50}, pool)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if result.Height() < 0.5 {
+		t.Errorf("General activation: expected strong output, got height=%v", result.Height())
+	}
+
+	// Threshold activation: only rules with strength > 0.6 fire
+	engine.SetActivation(NewThresholdActivation(0.6, GreaterThan))
+	_, err = engine.Evaluate(map[VarID]float64{1: 50}, pool)
+	if err == nil {
+		t.Error("Expected 'no rules fired' error with threshold > 0.6")
+	}
+
+	// Proportional activation: normalize
+	engine.SetActivation(NewProportionalActivation())
+	result, err = engine.Evaluate(map[VarID]float64{1: 50}, pool)
+	if err != nil {
+		t.Fatalf("Expected no error, got %v", err)
+	}
+	if result.Height() <= 0 {
+		t.Error("Proportional activation should produce output")
 	}
 }

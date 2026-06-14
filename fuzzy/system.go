@@ -90,7 +90,7 @@ func (s *FuzzyLogicSystem) Evaluate(expression string, ctx core.EvaluationContex
 		if i == 0 {
 			truth = m
 		} else {
-			truth = s.engine.tnorm(truth, m)
+			truth = s.engine.GetTNorm()(truth, m)
 		}
 	}
 

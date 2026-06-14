@@ -3,6 +3,8 @@ package fuzzy
 import (
 	"math"
 	"testing"
+
+	"github.com/xDarkicex/memory"
 )
 
 func assertClose(t *testing.T, expected, actual TruthValue, msg string) {
@@ -91,4 +93,100 @@ func TestLaplace(t *testing.T) {
 	zeroScale := Laplace(50, 0)
 	assertClose(t, 1.0, zeroScale(50), "zero scale at loc")
 	assertClose(t, 0.0, zeroScale(51), "zero scale off loc")
+}
+
+func TestRectangle(t *testing.T) {
+	mf := Rectangle(10, 20)
+	assertClose(t, 0.0, mf(9), "below start")
+	assertClose(t, 1.0, mf(10), "at start")
+	assertClose(t, 1.0, mf(15), "middle")
+	assertClose(t, 1.0, mf(20), "at end")
+	assertClose(t, 0.0, mf(21), "above end")
+}
+
+func TestRamp(t *testing.T) {
+	mf := Ramp(0, 100)
+	assertClose(t, 0.0, mf(-10), "below start")
+	assertClose(t, 0.0, mf(0), "at start")
+	assertClose(t, 0.5, mf(50), "middle")
+	assertClose(t, 1.0, mf(100), "at end")
+	assertClose(t, 1.0, mf(150), "above end")
+}
+
+func TestSShape(t *testing.T) {
+	mf := SShape(0, 100)
+	assertClose(t, 0.0, mf(-10), "below start")
+	assertClose(t, 0.0, mf(0), "at start")
+	assertClose(t, 1.0, mf(100), "at end")
+	assertClose(t, 1.0, mf(150), "above end")
+	// Midpoint at 50: 2*(0.5)^2 = 0.5
+	assertClose(t, 0.5, mf(50), "midpoint")
+}
+
+func TestZShape(t *testing.T) {
+	mf := ZShape(0, 100)
+	assertClose(t, 1.0, mf(-10), "below start")
+	assertClose(t, 1.0, mf(0), "at start")
+	assertClose(t, 0.0, mf(100), "at end")
+	assertClose(t, 0.0, mf(150), "above end")
+	assertClose(t, 0.5, mf(50), "midpoint")
+}
+
+func TestPiShape(t *testing.T) {
+	mf := PiShape(0, 40, 60, 100)
+	// SShape(0,40) at 20 = 0.5, ZShape(60,100) at 80 = 0.5
+	assertClose(t, 0.0, mf(0), "at bottom")
+	assertClose(t, 1.0, mf(50), "at top")
+	assertClose(t, 0.0, mf(100), "at end")
+}
+
+func TestCosine(t *testing.T) {
+	mf := Cosine(0, 100)
+	assertClose(t, 0.0, mf(-10), "below center")
+	assertClose(t, 1.0, mf(0), "at center")
+	assertClose(t, 0.0, mf(100), "at width")
+	assertClose(t, 0.0, mf(150), "above width")
+	// At 50: 0.5*(1+cos(π*50/100)) = 0.5*(1+0) = 0.5
+	assertClose(t, 0.5, mf(50), "quarter width")
+}
+
+func TestGaussianProduct(t *testing.T) {
+	mf := GaussianProduct(50, 10, 20)
+	assertClose(t, 1.0, mf(50), "at mean")
+	// Left of mean uses sigmaLeft=10
+	assertClose(t, TruthValue(math.Exp(-100.0/200.0)), mf(40), "left of mean")
+	// Right of mean uses sigmaRight=20
+	assertClose(t, TruthValue(math.Exp(-100.0/800.0)), mf(60), "right of mean")
+	// Zero sigma returns 0
+	zero := GaussianProduct(50, 0, 10)
+	assertClose(t, 0.0, zero(40), "zero left sigma off mean")
+}
+
+func TestSpike(t *testing.T) {
+	mf := Spike(50, 10)
+	assertClose(t, 1.0, mf(50), "at center")
+	assertClose(t, TruthValue(math.Exp(-1)), mf(60), "one width away")
+	// Zero width
+	zero := Spike(50, 0)
+	assertClose(t, 1.0, zero(50), "zero width at center")
+	assertClose(t, 0.0, zero(51), "zero width off center")
+}
+
+func TestDiscrete(t *testing.T) {
+	cfg := memory.DefaultConfig()
+	pool, err := memory.NewPool(cfg)
+	if err != nil {
+		t.Fatalf("failed to create pool: %v", err)
+	}
+	defer pool.Reset()
+
+	// xy pairs: x1,y1,x2,y2,x3,y3 = (0,0), (50,1), (100,0)
+	mf := Discrete([]float64{0, 0, 50, 1, 100, 0}, pool)
+	assertClose(t, 0.0, mf(0), "first point")
+	assertClose(t, 1.0, mf(50), "middle point")
+	assertClose(t, 0.0, mf(100), "last point")
+	assertClose(t, 0.5, mf(25), "interpolated")
+	assertClose(t, 0.5, mf(75), "interpolated 2")
+	assertClose(t, 0.0, mf(-10), "below range")
+	assertClose(t, 0.0, mf(150), "above range")
 }

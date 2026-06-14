@@ -33,20 +33,20 @@ func TestLexer(t *testing.T) {
 	}
 
 	// Lexer edge cases
-	l2 := NewLexer("+-()", nil) // no pool coverage
+	l2 := NewLexer("+-()", pool) // no pool coverage
 	toks2 := l2.Lex()
 	if toks2[0].Type != TokenError {
 		t.Error("Expected error for standalone '+'")
 	}
 	
-	l3 := NewLexer(".-5", nil)
+	l3 := NewLexer(".-5", pool)
 	toks3 := l3.Lex()
 	if toks3[0].Type != TokenError {
 		t.Error("Expected error for invalid float '.'")
 	}
 
 	// Token test
-	l4 := NewLexer(" \n\t ", nil)
+	l4 := NewLexer(" \n\t ", pool)
 	toks4 := l4.Lex()
 	if toks4[0].Type != TokenEOF {
 		t.Error("Expected EOF after whitespace")

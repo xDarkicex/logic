@@ -13,9 +13,9 @@ func setupTipping(pool *memory.Pool, arena *memory.Arena) (*MamdaniEngine, *Symb
 	engine := NewMamdaniEngine(pool)
 
 	// Variables
-	vService := NewLinguisticVar(sym.Register("Service", arena))
-	vFood := NewLinguisticVar(sym.Register("Food", arena))
-	vTip := NewLinguisticVar(sym.Register("Tip", arena))
+	vService := NewLinguisticVar(sym.Register("Service", arena), pool)
+	vFood := NewLinguisticVar(sym.Register("Food", arena), pool)
+	vTip := NewLinguisticVar(sym.Register("Tip", arena), pool)
 
 	// Service terms
 	fsS_Poor := NewFuzzySet(sym.Register("Poor", arena), nil, pool)
@@ -103,8 +103,8 @@ func setupHVAC(pool *memory.Pool, arena *memory.Arena) (*TSKEngine, *SymbolTable
 	sym := NewSymbolTable(arena)
 	engine := NewTSKEngine()
 
-	vTempErr := NewLinguisticVar(sym.Register("TempErr", arena))
-	vRate := NewLinguisticVar(sym.Register("Rate", arena))
+	vTempErr := NewLinguisticVar(sym.Register("TempErr", arena), pool)
+	vRate := NewLinguisticVar(sym.Register("Rate", arena), pool)
 	
 	vTempErr.AddTerm(1, &FuzzySet{ID: 1, Func: Gaussian(-5, 2)})
 	vTempErr.AddTerm(2, &FuzzySet{ID: 2, Func: Gaussian(0, 2)})

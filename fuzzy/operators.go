@@ -118,3 +118,85 @@ func LukasiewiczImplication(a, b TruthValue) TruthValue {
 func KleeneDienesImplication(a, b TruthValue) TruthValue {
 	return MaxTConorm(StandardNegation(a), b)
 }
+
+// TNorms (additional from fuzzylite)
+
+// EinsteinProduct returns the Einstein product t-norm: (a*b) / (2 - (a+b-a*b)).
+func EinsteinProduct(a, b TruthValue) TruthValue {
+	return (a * b) / (2.0 - (a + b - a*b))
+}
+
+// HamacherProduct returns the Hamacher product t-norm: (a*b) / (a+b-a*b).
+// Returns 0 if both inputs are 0.
+func HamacherProduct(a, b TruthValue) TruthValue {
+	if a == 0.0 && b == 0.0 {
+		return 0.0
+	}
+	return (a * b) / (a + b - a*b)
+}
+
+// NilpotentMinimum returns the nilpotent minimum t-norm.
+// Returns min(a,b) if a+b > 1, else 0.
+func NilpotentMinimum(a, b TruthValue) TruthValue {
+	if a+b > 1.0 {
+		return MinTNorm(a, b)
+	}
+	return 0.0
+}
+
+// DrasticProduct returns the drastic product t-norm.
+// Returns min(a,b) if max(a,b) == 1, else 0.
+func DrasticProduct(a, b TruthValue) TruthValue {
+	if a == 1.0 || b == 1.0 {
+		return MinTNorm(a, b)
+	}
+	return 0.0
+}
+
+// TConorms (additional from fuzzylite)
+
+// EinsteinSum returns the Einstein sum t-conorm: (a+b) / (1 + a*b).
+func EinsteinSum(a, b TruthValue) TruthValue {
+	return (a + b) / (1.0 + a*b)
+}
+
+// HamacherSum returns the Hamacher sum t-conorm: (a+b-2ab) / (1-ab).
+// Returns 1 if a*b == 1.
+func HamacherSum(a, b TruthValue) TruthValue {
+	if a*b == 1.0 {
+		return 1.0
+	}
+	return (a + b - 2.0*a*b) / (1.0 - a*b)
+}
+
+// NilpotentMaximum returns the nilpotent maximum t-conorm.
+// Returns max(a,b) if a+b < 1, else 1.
+func NilpotentMaximum(a, b TruthValue) TruthValue {
+	if a+b < 1.0 {
+		return MaxTConorm(a, b)
+	}
+	return 1.0
+}
+
+// DrasticSum returns the drastic sum t-conorm.
+// Returns max(a,b) if min(a,b) == 0, else 1.
+func DrasticSum(a, b TruthValue) TruthValue {
+	if a == 0.0 || b == 0.0 {
+		return MaxTConorm(a, b)
+	}
+	return 1.0
+}
+
+// NormalizedSum returns the normalized sum t-conorm: (a+b) / max(1, a+b).
+func NormalizedSum(a, b TruthValue) TruthValue {
+	s := a + b
+	if s > 1.0 {
+		return 1.0
+	}
+	return s
+}
+
+// UnboundedSum returns the unbounded sum t-conorm: a + b.
+func UnboundedSum(a, b TruthValue) TruthValue {
+	return a + b
+}

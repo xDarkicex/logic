@@ -94,7 +94,7 @@ func TestArbiterWrappers(t *testing.T) {
 
 	// Test MamdaniStrategy
 	mamEngine := NewMamdaniEngine(pool)
-	vTemp := NewLinguisticVar(1)
+	vTemp := NewLinguisticVar(1, pool)
 	fsHot := NewFuzzySet(10, []float64{0, 50, 100}, pool)
 	fsHot.Members[0] = 0.0
 	fsHot.Members[1] = 0.5

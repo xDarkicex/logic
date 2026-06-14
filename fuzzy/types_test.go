@@ -197,17 +197,17 @@ func TestFuzzySet(t *testing.T) {
 }
 
 func TestLinguisticVar(t *testing.T) {
-	lv := NewLinguisticVar(1)
-	if lv.ID != 1 {
-		t.Errorf("Expected ID 1, got %v", lv.ID)
-	}
-
 	cfg := memory.DefaultConfig()
 	pool, err := memory.NewPool(cfg)
 	if err != nil {
 		t.Fatalf("Failed to create pool: %v", err)
 	}
 	defer pool.Free()
+
+	lv := NewLinguisticVar(1, pool)
+	if lv.ID != 1 {
+		t.Errorf("Expected ID 1, got %v", lv.ID)
+	}
 
 	fs1 := NewFuzzySet(10, []float64{0, 10}, pool)
 	fs1.Members[0] = 0.2

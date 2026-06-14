@@ -1,19 +1,23 @@
 package fuzzy
 
+import "github.com/xDarkicex/memory"
+
 // PopulationEncoder generates a population of `n` uniformly distributed triangular
-// membership functions across the [min, max] domain. This enables population encoding
-// of continuous values into fuzzy sets, useful for bridging sensory inputs to fuzzy rules.
-func PopulationEncoder(n int, min, max float64) []MembershipFunc {
+// membership functions across the [min, max] domain. The returned slice is Pool-backed.
+func PopulationEncoder(n int, min, max float64, pool *memory.Pool) []MembershipFunc {
 	if n <= 0 {
 		return nil
 	}
 	if n == 1 {
-		// Single element covers everything identically
 		mid := min + (max-min)/2.0
-		return []MembershipFunc{Triangular(min, mid, max)}
+		funcs := memory.MustPoolSlice[MembershipFunc](pool, 1)
+		funcs = funcs[:1]
+		funcs[0] = Triangular(min, mid, max)
+		return funcs
 	}
 
-	funcs := make([]MembershipFunc, n)
+	funcs := memory.MustPoolSlice[MembershipFunc](pool, n)
+	funcs = funcs[:n]
 	step := (max - min) / float64(n-1)
 
 	for i := 0; i < n; i++ {

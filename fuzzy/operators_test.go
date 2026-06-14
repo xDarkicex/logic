@@ -68,3 +68,47 @@ func TestImplications(t *testing.T) {
 	assertClose(t, 0.7, KleeneDienesImplication(0.3, 0.5), "KleeneDienes 0.3 -> 0.5")
 	assertClose(t, 0.5, KleeneDienesImplication(0.7, 0.5), "KleeneDienes 0.7 -> 0.5")
 }
+
+func TestAdditionalTNorms(t *testing.T) {
+	// EinsteinProduct: (a*b)/(2-(a+b-a*b))
+	assertClose(t, TruthValue(0.3*0.7/(2.0-(0.3+0.7-0.3*0.7))), EinsteinProduct(0.3, 0.7), "Einstein 0.3 0.7")
+
+	// HamacherProduct: (a*b)/(a+b-a*b)
+	assertClose(t, 0.0, HamacherProduct(0.0, 0.0), "Hamacher 0 0")
+	assertClose(t, TruthValue(0.3*0.7/(0.3+0.7-0.3*0.7)), HamacherProduct(0.3, 0.7), "Hamacher 0.3 0.7")
+
+	// NilpotentMinimum: min(a,b) if a+b>1 else 0
+	assertClose(t, 0.3, NilpotentMinimum(0.3, 0.8), "Nilpotent 0.3 0.8 (sum>1)")
+	assertClose(t, 0.0, NilpotentMinimum(0.3, 0.5), "Nilpotent 0.3 0.5 (sum<1)")
+
+	// DrasticProduct: min(a,b) if max(a,b)==1 else 0
+	assertClose(t, 0.5, DrasticProduct(1.0, 0.5), "Drastic 1.0 0.5")
+	assertClose(t, 0.5, DrasticProduct(0.5, 1.0), "Drastic 0.5 1.0")
+	assertClose(t, 0.0, DrasticProduct(0.3, 0.7), "Drastic 0.3 0.7")
+}
+
+func TestAdditionalTConorms(t *testing.T) {
+	// EinsteinSum: (a+b)/(1+a*b)
+	assertClose(t, TruthValue((0.3+0.7)/(1.0+0.3*0.7)), EinsteinSum(0.3, 0.7), "Einstein 0.3 0.7")
+
+	// HamacherSum: (a+b-2ab)/(1-ab)
+	assertClose(t, 1.0, HamacherSum(1.0, 1.0), "Hamacher 1 1")
+	assertClose(t, TruthValue((0.3+0.7-2.0*0.3*0.7)/(1.0-0.3*0.7)), HamacherSum(0.3, 0.7), "Hamacher 0.3 0.7")
+
+	// NilpotentMaximum: max(a,b) if a+b<1 else 1
+	assertClose(t, 0.5, NilpotentMaximum(0.3, 0.5), "Nilpotent 0.3 0.5 (sum<1 => max=0.5)")
+	assertClose(t, 1.0, NilpotentMaximum(0.7, 0.8), "Nilpotent 0.7 0.8 (sum>1)")
+
+	// DrasticSum: max(a,b) if min(a,b)==0 else 1
+	assertClose(t, 0.5, DrasticSum(0.0, 0.5), "Drastic 0.0 0.5")
+	assertClose(t, 0.5, DrasticSum(0.5, 0.0), "Drastic 0.5 0.0")
+	assertClose(t, 1.0, DrasticSum(0.3, 0.7), "Drastic 0.3 0.7")
+
+	// NormalizedSum: (a+b)/max(1,a+b)
+	assertClose(t, 0.8, NormalizedSum(0.3, 0.5), "Normalized 0.3 0.5 (sum<=1)")
+	assertClose(t, 1.0, NormalizedSum(0.7, 0.8), "Normalized 0.7 0.8 (sum>1)")
+
+	// UnboundedSum: a+b
+	assertClose(t, 1.0, UnboundedSum(0.3, 0.7), "Unbounded 0.3 0.7")
+	assertClose(t, 1.5, UnboundedSum(0.8, 0.7), "Unbounded 0.8 0.7")
+}
