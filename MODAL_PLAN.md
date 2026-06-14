@@ -236,6 +236,218 @@ This pipeline is the difference between evaluating a 5-world frame and evaluatin
 
 ---
 
+## Advanced Techniques from Spot
+
+These are deeper mathematical and algorithmic insights beyond the basic rewrite rules. Each is a standard technique from the model checking literature, extracted from Spot's implementation.
+
+### 8. Formula Hash Consing (O(1) Equality)
+
+Spot's `formula` class uses an internal hash cons table. Every `formula::ap()`, `formula::unop()`, `formula::binop()` returns a canonical pointer. Two formulas are equal iff they point to the same object. This gives:
+
+- **O(1) equality comparison**: pointer comparison, not tree traversal
+- **O(1) hashing**: pointer hash or integer formula ID
+- **Automatic DAG sharing**: identical subformulas are automatically shared
+
+For our Go implementation, use a global registry keyed by formula structure hash. When constructing a formula, check the registry first. If an identical formula already exists, return the existing reference. This eliminates redundant formula objects entirely — a `□(p ∧ q)` that appears in 50 rules is stored once.
+
+### 9. The `mospliter` Classification System
+
+Spot's simplifier pre-classifies subformulas into categories using bit flags before applying rewrite rules. This enables O(1) "does this subformula have property X?" checks.
+
+| Flag | Meaning | How we compute it |
+|------|---------|-------------------|
+| `Split_Event` | Purely eventual formula (◇-like) | Syntactic: `◇p`, `p U q` where `q` is eventual |
+| `Split_Univ` | Purely universal formula (□-like) | Syntactic: `□p`, `p R q` where `q` is universal |
+| `Split_EventUniv` | Both eventual AND universal | `□◇p` is both |
+| `Split_Bool` | Pure propositional (no modalities) | Delegates to `classical/` evaluator |
+| `Split_GF` / `Strip_GF` | `□◇p` pattern (recurrence) | Match `□◇X` shape, strip outer `□◇` for factoring |
+| `Split_FG` / `Strip_FG` | `◇□p` pattern (persistence) | Match `◇□X` shape, strip outer `◇□` for factoring |
+| `Split_U_or_W` | `p U q` or `p W q` shape | Binary until/weak-until |
+| `Split_R_or_M` | `p R q` or `p M q` shape | Binary release/strong-release |
+
+**High-impact rewrite that depends on classification:**
+```
+If f is purely eventual:   F(f) = f,  f U g = g,  f M g = f ∧ g
+If f is purely universal:  G(f) = f,  f R g = g,  f W g = f ∨ g
+If f is both:              X(f) = f   (next is redundant)
+```
+
+These three rules alone eliminate entire classes of redundant modal operators.
+
+### 10. Couvreur's On-the-Fly Emptiness Check
+
+The gold standard algorithm for checking ω-automaton emptiness. Applies directly to our tableau prover: satisfiability ≡ non-emptiness of the corresponding automaton.
+
+**Algorithm (pseudocode):**
+```
+couvreur_check(aut):
+    root = empty stack of (index, acc_set)  // SCC roots
+    arc  = empty stack of acc_set            // edge acceptance between SCCs
+    h = map: state → int                     // 0 = unvisited, -1 = dead
+    todo = DFS stack of (state, iterator)
+    num = 1
+
+    push initial state with order 1
+
+    while todo not empty:
+        state = todo.top()
+        if has_next_successor(state):
+            edge = next_successor(state)
+            dest = edge.dst
+            if h[dest] == 0:          // new state discovered
+                num++ ; h[dest] = num
+                root.push(num, {})
+                arc.push(edge.acc)
+                todo.push(dest)
+            elif h[dest] == -1:        // dead SCC, skip
+                continue
+            else:                      // back/cross edge — merge SCCs
+                threshold = h[dest]
+                while threshold < root.top().index:
+                    edge.acc |= arc.top()
+                    edge.acc |= root.top().condition
+                    arc.pop() ; root.pop()
+                root.top().condition |= edge.acc
+                if accepting(root.top().condition):
+                    return true        // found accepting SCC
+        else:
+            todo.pop()
+            if root.top().index == h[state]:  // state is SCC root
+                mark all states in this SCC as dead (h[s] = -1)
+                root.pop() ; arc.pop()
+
+    return false
+```
+
+**Key properties:**
+- **On-the-fly**: states are explored lazily, not all need to be visited
+- **SCC-based**: tracks strongly connected components via Tarjan-like root stack
+- **Dead state pruning**: once a non-accepting SCC is fully explored, all its states are marked dead
+- **Two variants**: works with both explicit graphs (unsigned indices, vector storage) and abstract graphs (state pointers, hash maps)
+
+**For our tableau prover:** Each tableau branch is a state. Branch expansion rules are successors. A closed branch is a dead state. An open, completed branch with no contradictions is an accepting SCC → formula is satisfiable.
+
+### 11. Acceptance Mark Bitmask
+
+Spot represents acceptance set membership as a compile-time-sized bitmask. Each edge carries a `mark_t` (bitmask of acceptance sets). This is far more memory-efficient than storing slices of set indices.
+
+For our implementation:
+```go
+type Mark uint64  // up to 64 acceptance sets per automaton
+
+const (
+    Inf0 Mark = 1 << iota  // acceptance set 0
+    Inf1                   // acceptance set 1
+    // ...
+)
+```
+
+Acceptance conditions are stored in reverse Polish notation as a bytecode array:
+```go
+type AccOp uint8
+const (
+    AccAnd AccOp = iota  // ∧
+    AccOr                // ∨
+    AccInf               // Inf(mark) — must visit infinitely often
+    AccFin               // Fin(mark) — must visit finitely often
+)
+
+type AccCondition []AccWord  // RPN bytecode
+```
+
+This enables fast evaluation during emptiness checks: push/pop marks on a stack as the bytecode is interpreted.
+
+### 12. Minato's ISOP (Irredundant Sum-of-Products)
+
+For converting BDDs back to minimized Boolean formulas. Useful when our SAT solver returns a model that needs to be expressed as a minimal propositional formula.
+
+**Algorithm sketch:**
+```
+ISOP(f):
+    if f == 0: return 0
+    if f == 1: return 1
+    x = top_variable(f)
+    f0 = f restricted to x=0
+    f1 = f restricted to x=1
+    g0 = ISOP(f0 - f1)   // cubes in f0 but not f1
+    g1 = ISOP(f1 - f0)   // cubes in f1 but not f0
+    h  = ISOP((g0 | g1) ∧ (f0 ∧ f1))  // shared cubes
+    return (x ∧ g1) ∨ (¬x ∧ g0) ∨ h
+```
+
+While we don't have BDDs in R4, this algorithm is worth documenting for R5 if we add BDD support.
+
+### 13. Cut-Point (Articulation Point) Relabeling
+
+Spot's approach to safely renaming Boolean subexpressions for optimization:
+
+1. Build undirected graph from formula syntax tree (parent-child edges)
+2. Compute articulation points using Hopcroft-Tarjan: node `v` is an articulation point if `low[v] >= num[u]` where `u` is the parent of `v`
+3. Only rename Boolean subformulas that are articulation points AND whose children are also articulation points
+
+This preserves semantic dependencies. For example, `(a ∧ b) U (a ∧ ¬b)` should NOT be relabeled as `p0 U p1` because `a` and `b` are shared across the two sides.
+
+### 14. Eventuality/Universality Propagation
+
+Precompute two boolean properties for every subformula once, then use them in O(1) lookups:
+
+```
+is_eventual(p)   = false (atomic)
+is_eventual(◇f)  = true
+is_eventual(□f)  = is_eventual(f)
+is_eventual(f∧g) = is_eventual(f) || is_eventual(g)
+is_eventual(f∨g) = is_eventual(f) && is_eventual(g)
+
+is_universal(p)  = false (atomic)
+is_universal(□f) = true
+is_universal(◇f) = is_universal(f)
+is_universal(f∧g) = is_universal(f) && is_universal(g)
+is_universal(f∨g) = is_universal(f) || is_universal(g)
+```
+
+These are computed bottom-up in O(n) on formula size. They power the high-impact rewrite rules in section 9.
+
+### 15. Formula Splitting by Independent APs
+
+Spot splits conjoined formulas into independent components before performing expensive checks:
+
+```
+split_independent_conjunctions(f1 ∧ f2 ∧ ... ∧ fn):
+    build undirected graph where:
+        nodes = subformulas f1...fn
+        edge(fi, fj) if AP(fi) ∩ AP(fj) ≠ ∅
+    run connected components
+    return one conjunction per component
+```
+
+Each component is checked independently — if any is unsatisfiable, the whole conjunction is. For a disjunction, any satisfiable component makes the whole satisfiable. This decomposes a potentially exponential check into smaller independent ones.
+
+---
+
+## SAT Solver Improvements from Spot
+
+While our CDCL solver already exceeds PicoSAT, Spot teaches several complementary techniques:
+
+### B.1 BDD for Boolean Subformulas
+
+Spot converts the Boolean skeleton of temporal formulas to BDDs for O(1) equivalence checking. Our equivalent: bridge `modal/boolean.go` to `sat/cdcl.go` — convert propositional subformulas to CNF via Tseitin, check equivalence with two SAT calls.
+
+For R4, SAT-backed checks are sufficient. For R5, consider adding ROBDD support for the Boolean fragment to get O(1) repeated equivalence queries.
+
+### B.2 Acceptance-Driven Clause Learning
+
+Spot's emptiness check learns which SCCs are "dead" (non-accepting). Our SAT solver could adopt a similar pattern: when a decision level's assignment space is fully explored and unsatisfiable, mark that level's variable subspace as "dead" to avoid redundant exploration in restarts.
+
+### B.3 Formula Structure-Guided Variable Ordering
+
+Spot classifies subformulas by type (eventual, universal, Boolean). Our SAT solver's VSIDS heuristic could weight variables based on the modal structure of the original formula — variables from eventual subformulas get higher activity bias (they're more likely to be decision-critical).
+
+### B.4 Independent Component Decomposition
+
+Before SAT solving, split the CNF into independent variable components (same connected-components algorithm as section 15). Solve each component independently. If any component is UNSAT, the whole formula is UNSAT. This avoids exponential blowup from unrelated clauses interacting in the solver.
+
+---
+
 ## System Axioms (increasing strength)
 
 | System | Condition on R | Axiom | Use in daemon |
