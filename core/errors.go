@@ -31,3 +31,21 @@ func NewLogicError(system, operation, message string) *LogicError {
 func NewError(operation, message string) *LogicError {
 	return NewLogicError("", operation, message)
 }
+
+// ContradictionError represents an error where contradictory beliefs were encountered.
+// Instead of a hard failure, it carries the degraded result so the system can continue operating.
+type ContradictionError struct {
+	*LogicError
+	DegradedResult interface{}
+}
+
+func NewContradictionError(system, operation, message string, degradedResult interface{}) *ContradictionError {
+	return &ContradictionError{
+		LogicError:     NewLogicError(system, operation, message),
+		DegradedResult: degradedResult,
+	}
+}
+
+func (e *ContradictionError) Error() string {
+	return fmt.Sprintf("%s (Degraded Result Provided)", e.LogicError.Error())
+}

@@ -83,3 +83,20 @@ func (e *LogicEngine) ConvertBetween(expr string, fromSystem, toSystem string) (
 	// Placeholder - implement in future phases
 	return "", fmt.Errorf("conversion not yet implemented")
 }
+
+// ConfidenceInterval represents a graded interval of belief or confidence,
+// primarily used by paraconsistent and fuzzy evaluation systems.
+type ConfidenceInterval struct {
+	Lower float64
+	Upper float64
+}
+
+// Width returns the size of the confidence interval.
+func (c ConfidenceInterval) Width() float64 {
+	return c.Upper - c.Lower
+}
+
+// IsDegraded returns true if the confidence interval is wider than epsilon.
+func (c ConfidenceInterval) IsDegraded(epsilon float64) bool {
+	return c.Width() > epsilon
+}
