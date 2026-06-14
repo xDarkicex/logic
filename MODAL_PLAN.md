@@ -448,6 +448,157 @@ Before SAT solving, split the CNF into independent variable components (same con
 
 ---
 
+## Verification Pipeline Architecture from Spot
+
+Spot chains algorithms into a pipeline: **simplify → translate → post-process → check**. Each stage has multiple strategies selected by cost/benefit. These patterns apply directly to our modal package.
+
+### 16. LTL Splitting: Obligation / Suspendable / Rest
+
+Spot's most important decomposition (from `translate.cc`). Before translating a formula to an automaton, it classifies subformulas into three groups:
+
+| Group | Property | Translation strategy | Modal analog |
+|-------|----------|---------------------|-------------|
+| **Obligation** | `is_syntactic_obligation()` | Translate to minimal WDBA (weak deterministic Büchi) | Safety formulas: `□p`, `p W q` — use direct model checking |
+| **Suspendable** | `is_eventual() && is_universal()` | Translate separately, product with "suspension" | `□◇p` — both always-eventual and eventually-always |
+| **Rest** | Everything else | Full Couvreur FM construction | General LTL: `p U q`, `GFa → GFb` |
+
+**Key identity:**
+```
+F(q ∨ u ∨ f) = q ∨ F(u) ∨ F(f)   // eventual split
+G(q ∧ e ∧ f) = q ∧ G(e) ∧ G(f)   // universal split
+```
+
+This decomposition is the difference between a 10-state automaton and a 10,000-state one.
+
+### 17. Post-Processing Cascade: Cheap First, Then Exact
+
+Spot's `postprocessor::run()` chains algorithms from cheapest to most expensive:
+
+```
+1. Simplify acceptance condition              (O(n), always)
+2. Remove alternation                         (O(n), always)
+3. SCC filter (remove useless states)         (O(n), always)
+4. WDBA minimization attempt                  (O(n log n), level-dependent)
+5. Simulation-based reduction                 (O(n²) BDD ops, level-dependent)
+6. Determinization (Safra/Piterman)           (O(2^n log n), only if Deterministic)
+7. SAT-based minimization                     (NP-complete, only if enabled)
+8. Compare multiple results, pick smallest    (O(n), always)
+```
+
+**Our modal pipeline should follow the same pattern:**
+```
+1. Syntactic checks:   is_valid_syntactically(f) → trivial true/false
+2. Cheap checks:       is_valid_in_frame(f, small_frame) → quick model check
+3. Exact check:        tableau_prove(f) → definitive answer
+4. Model extraction:   extract_countermodel(f) → if invalid, show why
+```
+
+### 18. The "Now / Next" Decomposition (Couvreur FM)
+
+The core of Spot's LTL→automaton translation. Every temporal formula is decomposed at state `s` into three parts:
+
+```
+f at state s ≡
+  NOW(f, s)      // Boolean condition that must hold at s
+  ∧ ○NEXT(f, s)   // What must hold at s's successors (X-formulas)
+  ∧ PROMISE(f, s)  // Acceptance promises (what must eventually happen)
+```
+
+**The BDD encoding uses three disjoint variable sets:**
+- `var_set`: Atomic propositions (what's true NOW)
+- `next_set`: X-subformulas (what's NEXT)
+- `a_set`: Acceptance promises (what must EVENTUALLY happen)
+
+**Promise rules:**
+```
+PROMISE(a U b)  = PROMISE(b)        // to satisfy a U b, eventually b
+PROMISE(F a)    = PROMISE(a)        // to satisfy F a, eventually a
+PROMISE(a M b)  = PROMISE(a ∧ b)    // to satisfy a M b, both must hold
+```
+
+This is essentially a **symbolic tableau**: the BDD variables encode tableau branches implicitly, and the Minato ISOP algorithm extracts minimal disjuncts.
+
+### 19. Simulation-Based State Reduction
+
+Spot computes **direct simulation** (suffix inclusion) and **reverse simulation** (prefix inclusion), then iterates to a fixpoint. States that simulate each other are merged; transitions are pruned via implication.
+
+**Core technique (BDD signatures):**
+```
+signature(s) = ∏ { cond × bdd_var(class_of(dst)) : for each edge s → dst }
+```
+
+Two states are equivalent iff they have identical signatures. This is computed by assigning each partition class a BDD variable, then building the signature as a BDD conjunction.
+
+**For modal logic:** This is bisimulation contraction. Two worlds `w1, w2` in a Kripke model are bisimilar (and thus satisfy the same modal formulas) iff they have the same valuation and the same pattern of accessible worlds. The signature computation directly implements this.
+
+### 20. Level-Based Degeneralization
+
+Converts n acceptance sets (generalized Büchi) to 1 set (classic Büchi). The level counter tracks "which acceptance set are we expecting next?"
+
+**Algorithm:**
+```
+State = (original_state, level)
+level ∈ {0, 1, ..., n-1, accepting}
+
+For edge s --cond,{sets}--> d:
+    next_level = advance(level, sets)
+    if next_level == accepting:
+        edge is ACCEPTING
+        next_level = 0
+    add edge (s,level) --cond--> (d,next_level)
+```
+
+**Optimizations:**
+- **Skip levels:** If sets {0,1,3} are seen, jump directly to level 3
+- **Per-SCC orders:** Different SCCs can use different acceptance set orderings
+- **Bottommost copy removal:** Redundant (state, level) copies are merged
+
+**For modal logic:** When a formula has multiple `◇` (eventuality) subformulas, degeneralization tracks which ones have been satisfied. This maps to **progress measures** in tableau-based modal provers.
+
+### 21. Stutter Invariance
+
+A property is stutter-invariant if duplicating states (without changing atomic propositions) doesn't change truth. Formally, for any word `w = x·a·y`, stuttering `w' = x·a·a·y` preserves membership.
+
+**Why this matters:** Stutter-invariant formulas can be checked on **reduced models** where stuttering states are collapsed. This is critical for the daemon: memory retrieval that doesn't change the retrieved set between two time steps can "stutter" — the temporal formula shouldn't care.
+
+**Syntactic check:** A formula without `X` (next) is trivially stutter-invariant. Formulas with `X` only under `□` or `◇` may also be stutter-invariant.
+
+**For our `temporal.go`:** Add `IsStutterInvariant(f Formula) bool` — syntactic check that enables model compression before evaluation.
+
+### 22. DFA Minimization via Hopcroft Partition Refinement
+
+Spot minimizes deterministic automata using a variant of Hopcroft's algorithm with BDD signatures:
+
+```
+Hopcroft(states, final, non_final):
+    partition = [final, non_final]
+    while partition changes:
+        for each block B in partition:
+            for each state s in B:
+                signature(s) = ∏ { cond × bdd_var(class_of(dst)) }
+            split B by signature
+    return automaton from partition
+```
+
+**For modal logic:** This is the algorithm for computing the **coarsest bisimulation** on a labeled transition system. It produces the minimal bisimilar model — the canonical form of a Kripke structure.
+
+### 23. Reactive Synthesis (Constructive Satisfiability)
+
+Spot can synthesize a controller from an LTL specification: given `φ(inputs, outputs)`, produce a strategy that guarantees `φ`.
+
+```
+synthesis(φ):
+    1. Split APs into inputs / outputs
+    2. Translate φ to deterministic parity automaton (DPA)
+    3. Convert DPA to parity game (environment vs. controller states)
+    4. Solve parity game (Zielonka's recursive algorithm)
+    5. Extract winning strategy as Mealy machine
+```
+
+**For modal logic:** This is **constructive model extraction**. Given a formula `φ`, not just check if it's satisfiable — build the model (strategy) that witnesses it. Our tableau prover's `ProveSatisfiable(formula) (*Model, bool)` already does this for propositional modal logic. For temporal logic, the parity game approach extends this to infinite paths.
+
+---
+
 ## System Axioms (increasing strength)
 
 | System | Condition on R | Axiom | Use in daemon |
