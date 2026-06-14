@@ -599,6 +599,131 @@ synthesis(φ):
 
 ---
 
+## LTSmin: PINS, Symbolic Reachability, and Parallel Verification
+
+LTSmin's key innovation is the **Partitioned Next-State Interface (PINS)** — an abstraction that partitions the state vector into transition groups with dependency matrices. Permissive BSD-like license.
+
+### 24. PINS Dependency Matrices
+
+The PINS abstraction partitions transitions into groups that share the same set of state variables they read/write. Four boolean matrices map groups to state vector positions:
+
+| Matrix | Meaning | Use in our solver |
+|--------|---------|-------------------|
+| `read_matrix` | Which positions group g reads | "Short vector" projection — only pass relevant atoms to subformula evaluator |
+| `may_write_matrix` | Which positions group g may write | Track which atoms a transition could change |
+| `must_write_matrix` | Which positions group g always writes | Dead variable elimination in SAT encoding |
+| `combined_matrix` | Union of read + write | Classical dependency analysis |
+
+**Short vs. Long vectors:** When evaluating a transition group, only the state variables marked in the read matrix are passed (the "short vector"). The next-state function only produces the write columns (the "copy vector"). Unchanged positions are copied directly. This eliminates redundant data movement.
+
+**For modal logic:** Each transition group maps to a subset of the accessibility relation. The read matrix tells which atomic propositions a modal subformula depends on. If `□p` only depends on proposition `p`, transitions that don't write `p` can skip re-evaluating `□p` — the truth value is copied from the source world.
+
+### 25. FORCE Variable Ordering
+
+LTSmin uses the FORCE algorithm (Aloul, Markov, Sakallah) to minimize the "event span" of dependency matrices — the sum over rows of `(last_col - first_col + 1)`. Smaller spans mean tighter BDD variable clustering.
+
+**Algorithm:**
+```
+FORCE(matrix):
+    repeat until convergence:
+        1. COG[i] = center_of_gravity(row_i)  // average column index of 1s in row i
+        2. For each column j:
+           tent[j] = average(COG[i] for all rows i where m[i][j] == 1)
+        3. Sort columns by tent[j] ascending
+        4. Permute columns to this order
+        5. Compute new event span
+        6. If span increased: revert and stop
+```
+
+**Mathematical intuition:** Variables that appear together in many clauses/hyperedges should be placed nearby in the decision order. The force-based metaphor: each hyperedge exerts a "spring force" pulling its variables toward its center of gravity.
+
+**For our SAT solver:** Run FORCE on the clause-variable incidence matrix to compute an initial static variable order. This gives the VSIDS heuristic a better starting point and biases it toward proven locality patterns.
+
+### 26. Nested DFS with Early Cycle Detection
+
+LTSmin implements Courcoubetis et al.'s nested DFS for LTL model checking with a critical optimization: **Early Cycle Detection (ECD)**.
+
+**Color scheme:**
+```
+CYAN  = on blue DFS stack (currently exploring)
+BLUE  = visited by blue DFS, fully processed children are PINK
+PINK  = red DFS completed (no accepting cycle reachable)
+```
+
+**Key optimization — ECD:** Check for accepting cycles directly during the blue DFS, not just in the red DFS. When a successor `t` of state `s` is already CYAN and either `s` or `t` is accepting, an accepting cycle is found immediately. This often avoids launching the red DFS entirely.
+
+**All-Red optimization:** When backtracking, if all children of a state are PINK (red-complete), set the parent to PINK without a separate red DFS. Track which stack levels have all-red children via a bitmask.
+
+**For our tableau prover:** NDFS maps directly to branch exploration. CYAN = active branch, PINK = closed branch (contradiction found), BLUE = open branch pending completion. ECD catches contradictions early before exploring the full branch. The accepting cycle is a satisfiability witness — a completed open branch.
+
+### 27. Guard-Based Partial Order Reduction
+
+LTSmin's most sophisticated POR uses dependency matrices to compute stubborn sets. Five matrices encode transition independence:
+
+| Matrix | Meaning |
+|--------|---------|
+| `nes` (Necessary Enabling Set) | For a disabled group g, groups that must fire to enable g |
+| `nds` (Necessary Disabling Set) | For an enabled group g, groups that must fire to disable g |
+| `nce` (Not Co-Enabled) | Groups never simultaneously enabled |
+| `dna` (Do Not Accord) | Groups whose execution order matters (don't commute) |
+| `not_accords` | Groups with commutativity failure |
+
+**Beam search** finds a minimal stubborn set by scoring groups with a heuristic:
+```
+h(group) = 1 if disabled (cheap to include)
+           visibility_factor * ngroups if enabled + visible
+           enabled_count * ngroups if excluded (expensive — we want to exclude)
+           2 if included (must be selected)
+```
+
+**For modal logic:** The commutativity matrix (`dna`) is the key. Two modal subformulas commute if they don't share atomic propositions. `□p` and `◇q` with disjoint APs can be evaluated in any order — they're independent. This enables pruning symmetric tableau branches.
+
+### 28. Saturation Reachability
+
+LTSmin's most sophisticated symbolic algorithm assigns transition groups to levels based on the highest BDD variable they depend on, then applies fixpoints level-by-level:
+
+```
+SAT(visited, groups):
+    Assign groups to levels by highest BDD variable
+    k = 0
+    while k < max_levels:
+        old = visited
+        apply fixpoint at level k only
+        if visited == old: k++          // level saturated
+        else: k = back_edge[k]          // re-enter lower levels
+```
+
+When a level produces new states, saturation **re-enters lower levels** (`back_edge`), because new states at a high level may enable transitions at lower (previously saturated) levels. This is more efficient than BFS because it converges to the global fixpoint without repeatedly visiting already-saturated levels.
+
+**For modal logic:** Saturation maps to **alternating fixpoint computation** for CTL and the modal mu-calculus. `□◇p` is `νX. μY. (p ∨ □Y) ∧ ◇X` — the alternation depth determines the number of levels. Saturation evaluates the inner fixpoint to completion before advancing the outer one.
+
+### 29. Tree-Based State Compression (TreeDBS)
+
+LTSmin compresses state vectors by recursively pairing slots and storing the pairs in a non-resizing hash table. The resulting tree shares common prefixes — states that differ only in a leaf slot share all internal nodes.
+
+**Incremental update:** Given a related state `prev` and a transition group `g`, only the slots affected by `g` (from the write matrix) are updated. Unaffected subtrees are reused. This makes state storage O(delta) instead of O(state_vector_length).
+
+**Satellite bits:** Tree root nodes carry extra bits for algorithm state (e.g., NDFS colors). This avoids a separate color map.
+
+**For modal logic:** When generating candidate worlds during tableau expansion, most variables are copied unchanged between worlds. TreeDBS-like incremental storage means each new world only allocates for the propositions that actually changed.
+
+### 30. Symbolic Reachability with Vector Set Abstraction
+
+LTSmin abstracts over multiple decision diagram backends (Buddy BDDs, Sylvan BDDs, LDDmc, SDD) via a single `vset` interface:
+
+```
+vset_next(dst, src, relation)     → image:  {y | ∃x∈src: (x,y)∈rel}  = ◇src
+vset_prev(dst, src, rel, univ)    → preimage: {x | ∃y∈dst: (x,y)∈rel}  = ◇⁻¹dst
+vset_union, vset_intersect, vset_minus   → Boolean ops on world-sets
+vset_least_fixpoint(set, rel)     → μX. set ∪ rel(X)
+```
+
+**Key insight:** `vset_next` directly computes `◇φ` (exists successor satisfying φ). `vset_prev` computes `□φ` (all predecessors satisfy φ). The fixpoint operations compute CTL/mu-calculus operators directly on BDD/SDD representations of world-sets.
+
+**For our modal package:** The `vset` interface is the right abstraction layer. Phase 1-2 can use explicit sets (`[]World` slices). R5 can add a BDD or SDD backend behind the same interface without changing any evaluation code.
+
+---
+
 ## System Axioms (increasing strength)
 
 | System | Condition on R | Axiom | Use in daemon |
@@ -1029,6 +1154,24 @@ What we need: How are temporal operators (always, eventually, until, since) used
 Search for: "Go modal logic library Kripke", "Go theorem prover modal", "Go description logic reasoner", "Go LTL model checker", "Go epistemic logic solver".
 
 What we need: Does anything exist in Go? If not — same situation as fuzzy — we're first.
+
+### Target 6: PINS-Based Incremental SAT for Modal Logic (LTSmin)
+
+Search for: "partitioned next-state interface incremental SAT", "dependency matrix SAT solver", "FORCE variable ordering CDCL", "guard-based stubborn set partial order reduction modal logic".
+
+What we need: Can PINS dependency matrices be applied to incremental SAT solving for modal logic? When a tableau step changes only one proposition, can we incrementally update the SAT encoding instead of rebuilding?
+
+### Target 7: Symbolic Model Checking for Kripke Frames
+
+Search for: "symbolic model checking Kripke frame", "BDD-based modal logic", "SDD sentential decision diagram modal", "vset abstraction model checking".
+
+What we need: Can LTSmin's vset abstraction (BDD/SDD-backed world-set representation) be ported to Go? This would enable exponential compression of world-sets in the tableau prover.
+
+### Target 8: TreeDBS-Style Compression for World Storage
+
+Search for: "tree-based state compression model checking", "incremental hash tree state storage", "recursive state compression parallel".
+
+What we need: LTSmin's TreeDBS incrementally updates only changed slots when storing a new state. Can we apply this to world storage in the Kripke frame, where most propositions are copied unchanged between accessible worlds?
 
 ---
 
