@@ -1368,6 +1368,31 @@ Relinche checks that every concurrent execution is equivalent to SOME sequential
 
 ---
 
+## The PLC Scan Cycle as Temporal Evaluation (OpenPLC, Autonomy Logic)
+
+OpenPLC is an IEC 61131-3 compliant industrial PLC runtime. The scan cycle IS temporal logic evaluation.
+
+### Scan Cycle = World Transition
+
+```
+while running: READ inputs → EXECUTE program → WRITE outputs → SLEEP
+```
+Each iteration = one world. The image table = valuation. The program = `○(next_state)`. **For `temporal.go`:** `Evaluate()` replicates this loop.
+
+### Image Tables = Fixed Valuation Vectors
+
+All I/O pre-bound to fixed-size arrays at load time. Zero allocation during execution. **For `frame.go`:** Pre-allocate Pool-backed `[]TruthValue` indexed by `(world * numVars + var)` — same pattern.
+
+### Forcing = Deontic Override
+
+PLC forcing pins a variable regardless of program logic. `Obligation(x=forced)` overrides `Permission(x=computed)`. Maps to deontic framework sections 40-49.
+
+### Real-Time = Bounded Temporal Check
+
+Hard scan deadlines: `□◇(complete_within(deadline))`. Missed deadline = overrun.
+
+---
+
 ## System Axioms (increasing strength)
 
 | System | Condition on R | Axiom | Use in daemon |
