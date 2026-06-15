@@ -140,6 +140,23 @@ func (f *Frame) Accessible(w World, rel RelationType) []World {
 	return result
 }
 
+// AccessibleSet returns a WorldSet bit-vector of all worlds accessible from w via rel.
+// O(E) to build, then O(1) membership tests. Pool-backed.
+func (f *Frame) AccessibleSet(w World, rel RelationType, pool *memory.Pool) *WorldSet {
+	ws := NewWorldSet(len(f.worlds), pool)
+	for i := range f.edges {
+		if f.edges[i].Src == w && f.edges[i].Rel == rel {
+			ws.Add(f.edges[i].Dst)
+		}
+	}
+	for i := range f.weightedEdges {
+		if f.weightedEdges[i].Src == w && f.weightedEdges[i].Rel == rel {
+			ws.Add(f.weightedEdges[i].Dst)
+		}
+	}
+	return ws
+}
+
 // IsAccessible returns true if dst is accessible from src via rel.
 func (f *Frame) IsAccessible(src, dst World, rel RelationType) bool {
 	for i := range f.edges {
