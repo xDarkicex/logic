@@ -925,6 +925,88 @@ This is directly applicable to the daemon's memory recall scoring:
 
 ---
 
+## Deontic Reasoning Test Matrices (DeonticBench)
+
+DeonticBench provides real-world legal/regulatory test cases across five domains. The value for us is the **problem schemas** — structured patterns of permissions, prohibitions, and obligations that exercise a logic engine's correctness.
+
+### 40. Three Deontic Reasoning Patterns
+
+| Pattern | Domain | Structure | Modal encoding |
+|---------|--------|-----------|----------------|
+| **Combinatorial optimization** | Airline baggage fees | Choose optimal subset of bags to minimize cost under layered size/weight/class rules | `◇(minimal_cost)` — there exists a bag assignment satisfying all constraints |
+| **Multi-statute chaining** | Housing eviction law | Chain rules across statutes: `statute → jurisdiction → refers_to → predicate → answer` | `□(statute(S₁) → ... → answer)` — the law implies the answer |
+| **Hierarchical computation** | Tax code | Bottom-up: income → AGI → deductions → exemptions → taxable → brackets → total | Pure function composition: `tax = f(g(h(income)))` |
+
+### 41. Deontic Operator Catalog
+
+The test cases exercise these deontic operators, which are distinct from classical modal □/◇:
+
+| Deontic operator | Natural language | Logical meaning | Tested in |
+|------------------|------------------|-----------------|-----------|
+| **Permission** | "may", "is permitted", "can file in" | `P(φ) ≡ ¬O(¬φ)` — at least one compliant path exists | Housing (filing options), Airline (complimentary bag choices) |
+| **Prohibition** | "may not", "cannot", "excluded" | `F(φ) ≡ O(¬φ)` — no compliant path exists | Airline (oversize limit), Tax (exclusions) |
+| **Obligation** | "must", "shall", "required" | `O(φ)` — all compliant paths satisfy φ | Tax (filing requirements), Housing (service methods) |
+| **Exception** | "unless", "except", "provided that" | `O(φ) ∧ ¬exception → O(ψ)` — conditional override | Housing (district court operative vs not), Tax (standard vs itemized) |
+| **Priority** | "the higher of X vs Y applies" | `max(penalty_X, penalty_Y)` — conflict resolution | Airline (oversize vs overweight = max) |
+| **Default** | "if no rule applies, then X" | `¬∃applicable_rule → X` — fallback | Housing (venue default), Tax (standard deduction default) |
+
+### 42. The "Choose Best Combination" Pattern (Airline)
+
+The airline domain encodes a pattern where the correct answer requires exploring a combinatorial space:
+
+```
+1. For each bag: compute size penalty = f(dimensions)
+2. For each bag: compute weight penalty = g(weight, threshold)
+3. For each bag: penalty = max(size_penalty, weight_penalty)
+4. Choose N bags as complimentary (base fee = $0)
+5. Remaining bags get position-based base fees ($0, $0, $150, $200, ...)
+6. Total = ticket + base_fees + penalties
+7. Answer = MINIMUM over all choices of which bags are complimentary
+```
+
+**This is deontic choice under constraints**: the passenger has permission to designate any bags as complimentary, the airline has the obligation to charge base fees for the rest, and penalties are obligations triggered by exceeding thresholds. The optimal choice minimizes total cost.
+
+**For verification:** This pattern requires the logic engine to correctly handle `max()`, `min()`, threshold cascades (≤62→$0, ≤65→$30, ≤115→$200), and combinatorial search over bag assignments.
+
+### 43. The Statutory Chaining Pattern (Housing)
+
+Legal reasoning chains across multiple statutes to derive a binary answer:
+
+```
+Statute 1: "District court has jurisdiction over summary proceedings"
+Statute 2: "If district court not operative, municipal court is proper"
+Statute 3: "Venue may be changed to any other court"
+
+Question: "Are eviction cases first heard in municipal court?"
+
+Resolution:
+    statute_of_state(Law, State)           ← which law applies?
+    ∧ jurisdiction(Law, municipal_court)    ← does it grant jurisdiction?
+    ∧ refers_to(Law, summary_proceedings)   ← does it cover evictions?
+    → answer(yes)
+```
+
+**This is deontic implication chaining**: each statute adds a premise, and the question reduces to whether the conjunction of all applicable statutes entails the answer.
+
+**For verification:** This pattern tests whether the logic engine correctly handles:
+- Multi-premise conjunction over separately stated rules
+- Jurisdiction scoping (which state's law applies)
+- Exception handling (primary vs secondary methods, operative vs non-operative courts)
+- Binary entailment (yes/no from statute text)
+
+### 44. Relevance to the Daemon
+
+Deontic reasoning matters for the daemon because agent policies are deontic:
+
+1. **Recall scoring as permission**: The daemon *may* return memory M if it satisfies relevance threshold. `P(return(M)) ≡ score(M) > threshold`.
+2. **Consistency as obligation**: The daemon *must not* return contradictory memories. `O(¬(return(M₁) ∧ return(M₂) ∧ contradicts(M₁, M₂)))`.
+3. **Hop expansion as priority**: When multiple retrieval paths exist, take the one with highest confidence. `max(path₁.confidence, path₂.confidence)`.
+4. **Policy chaining**: Agent policies chain: "If in context C, AND memory type is T, AND recency > R, THEN boost score by B." This is the housing statutory chaining pattern applied to memory retrieval rules.
+
+**For the test suite (`modal/modal_test.go`):** DeonticBench's smoke tests (5 cases per domain × 5 domains = 25 cases) provide a ready-made validation suite for deontic reasoning correctness. Each case has a verified Prolog reference implementation and a numeric/binary label.
+
+---
+
 ## System Axioms (increasing strength)
 
 | System | Condition on R | Axiom | Use in daemon |
