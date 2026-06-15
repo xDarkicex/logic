@@ -815,6 +815,116 @@ The inductive/coinductive distinction directly informs our Go code structure:
 
 ---
 
+## Formula Learning via Skeleton Enumeration (learn_ltl, HSP-IIT)
+
+learn_ltl demonstrates a structured search model for LTL formula synthesis from positive/negative trace examples. Its architecture maps cleanly to Go concurrency patterns.
+
+### 35. Skeleton Tree Enumeration
+
+Instead of blindly generating formula strings, learn_ltl first enumerates **formula shapes** (skeleton trees), then fills them with operators. A skeleton tree of size `s` has `s` leaves (atomic propositions):
+
+```
+gen(size):
+    if size == 1: return [Leaf]
+    unary = gen(size-1) wrapped in UnaryNode
+    binary = for each partition left+right = size-1:
+               cartesian_product(gen(left), gen(right)) wrapped in BinaryNode
+    return unary ∪ binary
+```
+
+This separates **structural enumeration** from **operator assignment**. The number of skeletons grows as the Catalan numbers: 1, 1, 2, 5, 14, 42, 132... — manageable for small sizes.
+
+**For Go:** Each skeleton is an independent work unit. A goroutine pool can explore skeletons in parallel, with a channel collecting consistent formulas. This maps the `rayon::par_iter` + `find_any` pattern directly to `errgroup` or a worker pool.
+
+### 36. Normalization via Filtering (Not a Separate Pass)
+
+The key innovation: normalization is **built into generation**, not applied afterward. Each operator constructor has a `check_*` filter:
+
+```
+gen_formulae(skeleton, vars):
+    Leaf → [Atom(v) for v in vars]
+    UnaryNode(child) → for each child_formula in gen_formulae(child):
+        if check_not(f):    add Not(f)
+        if check_next(f):   add Next(f)
+        if check_globally(f): add Globally(f)
+        if check_finally(f): add Finally(f)
+    BinaryNode(left, right) → cartesian_product × for each:
+        if check_and(l,r):    add And(l,r)
+        if check_or(l,r):     add Or(l,r)
+        if check_implies(l,r): add Implies(l,r)
+        if check_until(l,r):  add Until(l,r)
+```
+
+A formula that fails its check is never generated. This means the output is **already normalized** — no separate normalization pass needed.
+
+**The ~40 filter rules (documented in learn.rs):**
+
+| Filter | Key rules |
+|--------|-----------|
+| `check_not` | `¬¬φ→φ`, `¬(φ→ψ)→φ∧¬ψ`, `¬Fφ→G¬φ`, De Morgan redundancies |
+| `check_next` | `XFφ→FXφ` (commute, finite trace OK) |
+| `check_globally` | `GGφ→Gφ` (idempotence), `GXφ→false` (finite trace) |
+| `check_finally` | `FFφ→Fφ` (idempotence) |
+| `check_and` | Commutativity (`l<r`), excluded middle, absorption, distribution, `X(φ∧ψ)≡Xφ∧Xψ`, `G(φ∧ψ)≡Gφ∧Gψ`, `(φ₁Uψ)∧(φ₂Uψ)≡(φ₁∧φ₂)Uψ` |
+| `check_or` | Commutativity (`l<r`), excluded middle, absorption, `X(φ∨ψ)≡Xφ∨Xψ`, `F(φ∨ψ)≡Fφ∨Fψ`, `(φUψ₁)∨(φUψ₂)≡φU(ψ₁∨ψ₂)`, Until expansion, Finally expansion |
+| `check_implies` | `¬φ→ψ≡ψ∨φ`, `φ→¬ψ≡¬(ψ∧φ)`, currying: `φ₁→(φ₂→ψ)≡(φ₁∧φ₂)→ψ` |
+| `check_until` | `φUφ≡φ`, `X(φUψ)≡(Xφ)U(Xψ)`, `φU(φUψ)≡φUψ` |
+
+**Commutativity trick:** `check_and` and `check_or` enforce `left < right` (total ordering on `SyntaxTree` via `#[derive(Ord)]`). Only the canonically-ordered variant passes. This breaks `φ∧ψ` vs `ψ∧φ` symmetry without needing a separate commutative normalization pass.
+
+### 37. Smart Trace Evaluation
+
+The `eval_at_time` function has two clever optimizations:
+
+**Reverse iteration for □ and ◇:**
+```rust
+Globally(branch) => (time..trace.len()).rev().all(|t| branch.eval_at_time(trace, t))
+Finally(branch)  => (time..trace.len()).rev().any(|t| branch.eval_at_time(trace, t))
+```
+Evaluating from the end of the trace backward means shorter suffixes are checked first. "Interpreting on shorter traces is generally faster." For Globally, if the last state fails, it short-circuits immediately without checking the entire trace.
+
+**Until short-circuit:**
+```rust
+Until(left, right) => for t in time..trace.len():
+    if right.eval_at_time(trace, t): return true   // found Q, done
+    else if !left.eval_at_time(trace, t): return false  // P failed, done
+```
+No recursion needed. The loop terminates as soon as either the right side is satisfied or the left side fails.
+
+### 38. Sample-Based Search Model
+
+The search problem: given `positive_traces` (must satisfy formula) and `negative_traces` (must falsify formula), find the smallest formula consistent with both.
+
+```
+solve(sample):
+    if !sample.is_solvable(): return None   // conflicting traces
+    for size in 1..∞:
+        if multithread:
+            skeletons.par_iter().flat_map(gen_formulae).find_any(is_consistent)
+        else:
+            skeletons.iter().flat_map(gen_formulae).find(is_consistent)
+```
+
+**Size-based iteration** guarantees the smallest formula is found first. The search terminates at the first consistent formula (which is minimal by construction).
+
+**Solvability pre-check:** `is_solvable()` returns false if any positive trace is identical to a negative trace — an inconsistent sample. This is a cheap early exit.
+
+**For Go concurrency:** The search is embarrassingly parallel at each size level. Skeletons are independent; each goroutine explores one skeleton's formula space. A `context.Context` with cancellation stops all workers when any goroutine finds a solution.
+
+### 39. Relevance to the Daemon
+
+This is directly applicable to the daemon's memory recall scoring:
+
+1. **Monitor = atomic proposition.** Each daemon sensor (charge level, room, door state) is a `Monitor` trait returning `bool` — an atomic proposition.
+2. **Trace = system execution.** The `run()` loop collects a `Trace<N>` — a sequence of `[bool; N]` arrays, one per time step.
+3. **Formula = recall constraint.** A learned LTL formula describes the temporal pattern of a memory: "the agent was in the lab AND eventually reached the charging station BEFORE the battery died."
+4. **Satisfaction check = recall match.** `formula.eval(trace)` checks if a memory trace satisfies a recall constraint. This is O(|trace| × |formula|) — fast enough for real-time scoring.
+5. **Learning = pattern discovery.** Given positive traces (successful recalls) and negative traces (failed recalls), `solve()` discovers the minimal temporal formula that distinguishes them. This is the daemon learning *why* certain memories are recalled.
+
+**For our `temporal.go`:** The `eval_at_time` pattern maps to `TemporalModel.EvalAtWorld(formula, worldIdx, timeline)`. The reverse-iteration optimization for □/◇ applies directly — evaluate from the last accessible world backward.
+
+---
+
 ## System Axioms (increasing strength)
 
 | System | Condition on R | Axiom | Use in daemon |
