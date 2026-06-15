@@ -1237,6 +1237,99 @@ The synchronous model maps naturally to daemon memory retrieval:
 
 ---
 
+## Tsetlin Machine Clause Logic (Graph Tsetlin Machine, Granmo 2024)
+
+Graph Tsetlin Machines learn propositional logic clauses from graph-structured data using Tsetlin Automata — finite-state reinforcement learners. MIT-licensed.
+
+### 56. Tsetlin Automata as Logic Learners
+
+A Tsetlin Automaton (TA) is a finite-state machine with 2N states that learns the optimal Boolean action (include/exclude a literal). The state is stored as an N-bit unsigned integer. The most significant bit determines the action.
+
+**State transition on feedback:**
+- **Reward:** Move deeper into current action — state moves away from the decision boundary
+- **Penalty:** Move toward the center — state moves toward the decision boundary
+
+This is discrete reinforcement learning with bounded states. Unlike gradient descent, there is no learning rate decay, no vanishing gradients, no floating point — just integer state transitions.
+
+### 57. Clause-Based Pattern Recognition
+
+A clause is a conjunction of literals:
+```
+Cⱼ(x) = l₁ ∧ l₂ ∧ ... ∧ lₙ    where lᵢ ∈ {xᵢ, ¬xᵢ}
+```
+
+Each literal's inclusion is controlled by a TA. The clause output is 1 if all included literals match the input, 0 otherwise. A clause is a **propositional logic rule** — directly human-readable.
+
+**Classification by weighted voting:**
+```
+class_sum(c) = Σⱼ wⱼ_c · Cⱼ(x)
+prediction = argmax_c class_sum(c)
+```
+
+Where `wⱼ_c` are integer clause weights learned via feedback. The class with the highest weighted sum of satisfied clauses wins.
+
+### 58. The Learning Rule
+
+Two types of feedback drive learning:
+
+**Type I (clause SHOULD output 1):**
+- Clause outputs 0 → Each TA that should include its literal gets reward for including, penalty for excluding
+- Clause outputs 1 → All TAs get reward for current action (reinforcement)
+
+**Type II (clause SHOULD output 0):**
+- Clause outputs 1 → Included TAs get penalty (they contributed to an incorrect activation)
+- Clause outputs 0 → No penalty (already correct)
+
+**Key property:** The learning rule only activates TAs when the clause's output is wrong. Correct clauses are left alone — no unnecessary state changes.
+
+### 59. Hypervector Encoding for Graph Nodes
+
+Graph node properties are encoded as sparse hypervectors:
+
+```
+hypervector(symbol) = {bit_pos₁, bit_pos₂}  // small set of positions in a large sparse vector
+X[node] = OR over all symbols: set bits at hypervector positions
+```
+
+**Why sparse?** The sparse encoding ensures that different symbols have low overlap probability. Two unrelated symbols are unlikely to share bit positions. This enables the clause to learn distinguishability: `prop_a ∧ prop_b` activates different bits than `prop_c ∧ prop_d`.
+
+**For our bit-vector engine:** This maps directly to `classical/bitvector.go`. Each node property is a bitmask. Clause evaluation is bitwise AND across literal masks. The entire clause evaluation is a single SIMD AND instruction.
+
+### 60. Message Passing = Modal Depth
+
+Multi-layer GTMs propagate messages across graph edges:
+
+```
+Layer 0: clause_output₀(node) = evaluate_clauses(node_properties)
+Layer d: clause_output_d(node) = evaluate_clauses(neighbor_messages)
+         where neighbor_messages = aggregate(clause_output_{d-1}(neighbors))
+```
+
+**This IS modal logic evaluation at depth d:**
+- Layer 0 = Propositional: what's true at this node?
+- Layer 1 = ◇-depth 1: what's true at this node's neighbors?
+- Layer 2 = ◇-depth 2: what's true at neighbors of neighbors?
+
+The number of message-passing layers equals the modal depth of the formula being evaluated. The clause `neighbor_has_prop_a ∧ neighbor_has_prop_b` is equivalent to `◇prop_a ∧ ◇prop_b` — both neighbors must exist and have those properties.
+
+### 61. Relevance to Our Package
+
+The Graph Tsetlin Machine bridges machine learning and propositional logic. For our codebase:
+
+| GTM concept | Our package mapping |
+|-------------|---------------------|
+| Clause `Cⱼ(x) = ∧ lᵢ` | `classical.BoolVector.And()` — single SIMD instruction |
+| Literal inclusion TA | `sat.CDCLSolver` decision variable — include or exclude |
+| Hypervector encoding | `classical.BitwiseInt` — sparse bitmask per atom |
+| Message passing depth | `modal.Frame` accessibility — modal depth of evaluation |
+| Clause weight `wⱼ_c` | Fuzzy `TruthValue` — weighted belief in a rule |
+| Classification voting | `fuzzy.MamdaniEngine` — rule aggregation |
+| Learning from examples | `learn_ltl.solve()` — formula synthesis from traces |
+
+**For the daemon:** A GTM could learn the recall scoring function directly from retrieval outcomes. Each clause is a rule like "memory has tag T AND recency > 7 days AND source is elevated → recall score +0.8." The Tsetlin Automata learn which literals matter, and the weights reflect confidence. The entire learned model is a set of propositional clauses — directly verifiable with our SAT solver.
+
+---
+
 ## System Axioms (increasing strength)
 
 | System | Condition on R | Axiom | Use in daemon |
