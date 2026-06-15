@@ -21,54 +21,52 @@ type TableauNode struct {
 	Closed   bool
 }
 
-// slabSize is the number of nodes per pre-allocated slab.
-// Slabs are never resized, so pointers remain valid.
-const slabSize = 1024
-
 // Prover holds allocators for tableau construction.
-// Nodes are batch-allocated in fixed-size Pool-backed slabs.
+// TableauNode and PrefixedFormula are FreeList-allocated (off-heap, GC-untraced).
 // Slices within nodes are Pool/Arena-backed.
 type Prover struct {
-	slabs  [][]TableauNode // each slab is Pool-backed
-	cur    []TableauNode   // current slab being filled
-	free   int             // next free index in cur slab
-	pool   *memory.Pool
-	arena  *memory.Arena
+	nodeFL  *memory.FreeList // FreeList for TableauNode (fixed ~128B slots)
+	pfFL    *memory.FreeList // FreeList for PrefixedFormula (fixed ~48B slots)
+	pool    *memory.Pool
+	arena   *memory.Arena
 }
 
-// NewProver creates a Prover.
+// NewProver creates a Prover. pool backs slice allocations; arena backs world paths.
 func NewProver(pool *memory.Pool, arena *memory.Arena) *Prover {
-	first := memory.MustPoolSlice[TableauNode](pool, slabSize)
+	nodeFL, _ := memory.NewFreeList(memory.FreeListConfig{
+		SlotSize: 128,
+	})
+	pfFL, _ := memory.NewFreeList(memory.FreeListConfig{
+		SlotSize: 64,
+	})
 	return &Prover{
-		slabs: [][]TableauNode{first[:0]},
-		cur:   first,
-		pool:  pool,
-		arena: arena,
+		nodeFL: nodeFL,
+		pfFL:   pfFL,
+		pool:   pool,
+		arena:  arena,
 	}
 }
 
-// Close is a no-op — pools are managed externally.
-func (p *Prover) Close() {}
+// Close releases FreeList memory.
+func (p *Prover) Close() {
+	p.nodeFL.Free()
+	p.pfFL.Free()
+}
 
-// allocNode returns a pointer into a Pool-backed node slab.
-// Slabs are never resized, so previously returned pointers stay valid.
+// allocNode allocates a TableauNode from the FreeList and initializes its slices.
 func (p *Prover) allocNode() *TableauNode {
-	if p.free >= slabSize {
-		next := memory.MustPoolSlice[TableauNode](p.pool, slabSize)
-		p.cur = next[:0]
-		p.slabs = append(p.slabs, p.cur)
-		p.free = 0
-	}
-	n := len(p.cur)
-	p.cur = p.cur[:n+1]
-	p.free = n + 1
-	np := &p.cur[n]
-	np.Formulas = memory.MustPoolSlice[PrefixedFormula](p.pool, 0)
-	np.Prefix = memory.MustArenaSlice[World](p.arena, 8)
-	np.Prefix = np.Prefix[:0]
-	np.Children = nil
-	np.Closed = false
-	return np
+	n := memory.MustFreeListAlloc[TableauNode](p.nodeFL)
+	n.Formulas = memory.MustPoolSlice[PrefixedFormula](p.pool, 0)
+	n.Prefix = memory.MustArenaSlice[World](p.arena, 8)
+	n.Prefix = n.Prefix[:0]
+	n.Children = nil
+	n.Closed = false
+	return n
+}
+
+// freeNode returns a TableauNode to the FreeList.
+func (p *Prover) freeNode(n *TableauNode) {
+	memory.FreeListDealloc(p.nodeFL, n)
 }
 
 // ProveSatisfiable checks whether a formula is satisfiable in the given frame.
