@@ -1,6 +1,10 @@
 package sat
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/xDarkicex/memory"
+)
 
 // MAXSATSolverImpl implements MAX-SAT solving
 type MAXSATSolverImpl struct {
@@ -17,7 +21,7 @@ func NewMAXSATSolver() *MAXSATSolverImpl {
 // SolveMAXSAT finds assignment satisfying maximum clauses
 func (m *MAXSATSolverImpl) SolveMAXSAT(cnf *CNF, weights []float64) *MAXSATResult {
 	if len(weights) != len(cnf.Clauses) {
-		weights = make([]float64, len(cnf.Clauses))
+		weights = memory.MustPoolSlice[float64](satPool, len(cnf.Clauses))[:len(cnf.Clauses)]
 		for i := range weights {
 			weights[i] = 1.0 // Unit weights
 		}
@@ -38,7 +42,7 @@ func (m *MAXSATSolverImpl) SolveWeightedMAXSAT(cnf *CNF, weights []float64) *MAX
 	high := totalWeight
 	bestAssignment := make(Assignment)
 	bestWeight := 0.0
-	bestUnsatisfied := make([]int, 0)
+	bestUnsatisfied := memory.MustPoolSlice[int](satPool, 0)
 
 	for high-low > 0.01 { // Precision threshold
 		mid := (low + high) / 2
@@ -47,7 +51,7 @@ func (m *MAXSATSolverImpl) SolveWeightedMAXSAT(cnf *CNF, weights []float64) *MAX
 		testCNF := NewCNF()
 
 		// Add original clauses with relaxation variables
-		relaxVars := make([]string, len(cnf.Clauses))
+		relaxVars := memory.MustPoolSlice[string](satPool, len(cnf.Clauses))[:len(cnf.Clauses)]
 		for i, clause := range cnf.Clauses {
 			if weights[i] >= mid {
 				// Hard clause - must be satisfied
@@ -58,7 +62,7 @@ func (m *MAXSATSolverImpl) SolveWeightedMAXSAT(cnf *CNF, weights []float64) *MAX
 				relaxVars[i] = relaxVar
 
 				// Add clause with relaxation: (original_clause ∨ relaxVar)
-				relaxedLiterals := make([]Literal, len(clause.Literals)+1)
+				relaxedLiterals := memory.MustPoolSlice[Literal](satPool, len(clause.Literals)+1)[:len(clause.Literals)+1]
 				copy(relaxedLiterals, clause.Literals)
 				relaxedLiterals[len(clause.Literals)] = Literal{
 					Variable: relaxVar,
@@ -79,7 +83,7 @@ func (m *MAXSATSolverImpl) SolveWeightedMAXSAT(cnf *CNF, weights []float64) *MAX
 
 			// Calculate actual satisfied weight
 			actualWeight := 0.0
-			unsatisfied := make([]int, 0)
+			unsatisfied := memory.MustPoolSlice[int](satPool, 0)
 
 			for i, clause := range cnf.Clauses {
 				if result.Assignment.Satisfies(clause) {

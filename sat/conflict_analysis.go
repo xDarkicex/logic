@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/xDarkicex/logic/core"
+	"github.com/xDarkicex/memory"
 )
 
 // FirstUIPAnalyzer implements state-of-the-art First Unique Implication Point analysis
@@ -35,8 +36,8 @@ type ResolutionStep struct {
 func NewFirstUIPAnalyzer() *FirstUIPAnalyzer {
 	return &FirstUIPAnalyzer{
 		seen:            make(map[string]bool),
-		conflictSide:    make([]string, 0, 32),
-		resolutionStack: make([]ResolutionStep, 0, 32),
+		conflictSide:    memory.MustPoolSlice[string](satPool, 32),
+		resolutionStack: memory.MustPoolSlice[ResolutionStep](satPool, 32),
 		levelsSeen:      make(map[int]bool),
 	}
 }
@@ -60,7 +61,7 @@ func (f *FirstUIPAnalyzer) Analyze(conflictClause *Clause, trail DecisionTrail) 
 	f.reset()
 
 	// Initialize with conflict clause
-	learntClause := make([]Literal, 0, len(conflictClause.Literals))
+	learntClause := memory.MustPoolSlice[Literal](satPool, len(conflictClause.Literals))
 
 	// Add all literals from conflict clause and track levels
 	for _, lit := range conflictClause.Literals {
@@ -111,7 +112,7 @@ func (f *FirstUIPAnalyzer) Analyze(conflictClause *Clause, trail DecisionTrail) 
 
 		// Perform resolution step with LBD tracking
 		f.resolutions++
-		oldClause := make([]Literal, len(learntClause))
+		oldClause := memory.MustPoolSlice[Literal](satPool, len(learntClause))[:len(learntClause)]
 		copy(oldClause, learntClause)
 
 		learntClause = f.resolveWithLBDTracking(learntClause, reason, resolveVar, trail)
@@ -151,7 +152,7 @@ func (f *FirstUIPAnalyzer) Analyze(conflictClause *Clause, trail DecisionTrail) 
 
 // resolveWithLBDTracking performs resolution between current learnt clause and reason clause with LBD tracking
 func (f *FirstUIPAnalyzer) resolveWithLBDTracking(learntClause []Literal, reasonClause *Clause, resolveVar string, trail DecisionTrail) []Literal {
-	newClause := make([]Literal, 0, len(learntClause)+len(reasonClause.Literals))
+	newClause := memory.MustPoolSlice[Literal](satPool, len(learntClause)+len(reasonClause.Literals))
 
 	// Add literals from learnt clause (except resolved variable)
 	for _, lit := range learntClause {
@@ -215,7 +216,7 @@ func (f *FirstUIPAnalyzer) getTrailEntriesAtLevel(trail DecisionTrail, level int
 
 	// Fallback implementation
 	assignment := trail.GetAssignment()
-	entries := make([]TrailEntry, 0, 32)
+	entries := memory.MustPoolSlice[TrailEntry](satPool, 32)
 
 	for variable := range assignment {
 		if trail.GetLevel(variable) == level {
@@ -247,7 +248,7 @@ func (f *FirstUIPAnalyzer) countCurrentLevelVars(clause []Literal, trail Decisio
 func (f *FirstUIPAnalyzer) buildLearnedClauseWithLBD(literals []Literal, trail DecisionTrail) *Clause {
 	// Remove duplicates and optimize
 	seen := make(map[string]bool)
-	uniqueLiterals := make([]Literal, 0, len(literals))
+	uniqueLiterals := memory.MustPoolSlice[Literal](satPool, len(literals))
 	levelSet := make(map[int]bool)
 
 	for _, lit := range literals {
@@ -290,7 +291,7 @@ func (f *FirstUIPAnalyzer) computeBacktrackLevel(literals []Literal, trail Decis
 	}
 
 	// Find second highest decision level
-	levels := make([]int, 0, len(literals))
+	levels := memory.MustPoolSlice[int](satPool, len(literals))
 	for _, lit := range literals {
 		level := trail.GetLevel(lit.Variable)
 		if level >= 0 && level < currentLevel {
@@ -309,7 +310,7 @@ func (f *FirstUIPAnalyzer) computeBacktrackLevel(literals []Literal, trail Decis
 	}
 
 	// Remove duplicates and return second highest
-	uniqueLevels := make([]int, 0, len(levels))
+	uniqueLevels := memory.MustPoolSlice[int](satPool, len(levels))
 	prev := -1
 	for _, level := range levels {
 		if level != prev {

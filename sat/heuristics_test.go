@@ -43,7 +43,7 @@ func TestVSIDSHeuristic_Basic(t *testing.T) {
 	}
 	
 	h.Reset()
-	if len(h.activity) != 0 {
+	if h.nextVar != 0 || !h.heap.IsEmpty() {
 		t.Error("Reset failed")
 	}
 }

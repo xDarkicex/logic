@@ -113,7 +113,7 @@ func (t *DecisionTrailImpl) Backtrack(level int) []string {
 	}
 
 	// Collect unassigned variables efficiently
-	unassigned := make([]string, 0, t.trailSize-backtrackIndex)
+	unassigned := memory.MustPoolSlice[string](satPool, t.trailSize-backtrackIndex)
 	for i := backtrackIndex; i < t.trailSize; i++ {
 		variable := t.trail[i].Variable
 		unassigned = append(unassigned, variable)
@@ -232,7 +232,7 @@ func (t *DecisionTrailImpl) GetTrailAtLevel(level int) []TrailEntry {
 		return []TrailEntry{}
 	}
 
-	entries := make([]TrailEntry, endIdx-startIdx)
+	entries := memory.MustPoolSlice[TrailEntry](satPool, endIdx-startIdx)[:endIdx-startIdx]
 	copy(entries, t.trail[startIdx:endIdx])
 	return entries
 }
@@ -241,7 +241,7 @@ func (t *DecisionTrailImpl) GetTrailAtLevel(level int) []TrailEntry {
 // This is crucial for conflict analysis in CDCL algorithms
 func (t *DecisionTrailImpl) GetDecisionVariablesAtLevel(level int) []string {
 	entries := t.GetTrailAtLevel(level)
-	decisions := make([]string, 0, len(entries)) // Pre-allocate reasonable capacity
+	decisions := memory.MustPoolSlice[string](satPool, len(entries)) // Pre-allocate reasonable capacity
 
 	for _, entry := range entries {
 		if entry.Reason == nil { // Decision variables have no reason clause
@@ -255,7 +255,7 @@ func (t *DecisionTrailImpl) GetDecisionVariablesAtLevel(level int) []string {
 // GetImplicationChain returns the implication chain for a variable
 // Useful for debugging, learning, and conflict analysis
 func (t *DecisionTrailImpl) GetImplicationChain(variable string) []TrailEntry {
-	chain := make([]TrailEntry, 0, 10) // Pre-allocate reasonable chain size
+	chain := memory.MustPoolSlice[TrailEntry](satPool, 10) // Pre-allocate reasonable chain size
 	visited := make(map[string]bool)   // Prevent infinite loops
 
 	current := variable
@@ -319,7 +319,7 @@ func (t *DecisionTrailImpl) GetLevelSize(level int) int {
 
 // GetAllLevels returns all active decision levels (utility method)
 func (t *DecisionTrailImpl) GetAllLevels() []int {
-	levels := make([]int, 0, len(t.levelStarts))
+	levels := memory.MustPoolSlice[int](satPool, len(t.levelStarts))
 	for level := range t.levelStarts {
 		levels = append(levels, level)
 	}

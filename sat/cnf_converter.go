@@ -5,6 +5,7 @@ import (
 
 	"github.com/xDarkicex/logic/classical"
 	"github.com/xDarkicex/logic/core"
+	"github.com/xDarkicex/memory"
 )
 
 // CNFConverter converts logical expressions to CNF using Tseitin transformation
@@ -140,7 +141,7 @@ func (c *CNFConverter) transformAnd(node *classical.ASTNode) (string, error) {
 	}
 
 	// Transform children
-	childVars := make([]string, len(node.Children))
+	childVars := memory.MustPoolSlice[string](satPool, len(node.Children))[:len(node.Children)]
 	for i, child := range node.Children {
 		var err error
 		childVars[i], err = c.tseitinTransform(child)
@@ -160,7 +161,7 @@ func (c *CNFConverter) transformAnd(node *classical.ASTNode) (string, error) {
 	}
 
 	// (auxVar ∨ ¬child1 ∨ ... ∨ ¬childN)
-	literals := make([]Literal, 0, len(childVars)+1)
+	literals := memory.MustPoolSlice[Literal](satPool, len(childVars)+1)
 	literals = append(literals, Literal{Variable: auxVar, Negated: false})
 	for _, childVar := range childVars {
 		literals = append(literals, Literal{Variable: childVar, Negated: true})
@@ -179,7 +180,7 @@ func (c *CNFConverter) transformOr(node *classical.ASTNode) (string, error) {
 	}
 
 	// Transform children
-	childVars := make([]string, len(node.Children))
+	childVars := memory.MustPoolSlice[string](satPool, len(node.Children))[:len(node.Children)]
 	for i, child := range node.Children {
 		var err error
 		childVars[i], err = c.tseitinTransform(child)
@@ -191,7 +192,7 @@ func (c *CNFConverter) transformOr(node *classical.ASTNode) (string, error) {
 	auxVar := c.getNextAuxVar()
 
 	// First clause: (¬auxVar ∨ child1 ∨ ... ∨ childN)
-	lits := make([]Literal, 0, len(childVars)+1)
+	lits := memory.MustPoolSlice[Literal](satPool, len(childVars)+1)
 	lits = append(lits, Literal{Variable: auxVar, Negated: true})
 	for _, childVar := range childVars {
 		lits = append(lits, Literal{Variable: childVar, Negated: false})
@@ -434,7 +435,7 @@ func (c *CNFConverter) transformXorDirect(node *classical.ASTNode, ecnf *Extende
 	}
 
 	// Transform children
-	childVars := make([]string, len(node.Children))
+	childVars := memory.MustPoolSlice[string](satPool, len(node.Children))[:len(node.Children)]
 	for i, child := range node.Children {
 		var err error
 		childVars[i], err = c.tseitinTransformExtended(child, ecnf)
@@ -446,7 +447,7 @@ func (c *CNFConverter) transformXorDirect(node *classical.ASTNode, ecnf *Extende
 	auxVar := c.getNextAuxVar()
 
 	// Create XOR clause: auxVar ⊕ child1 ⊕ child2 ⊕ ... = 1 (odd parity)
-	xorVars := make([]string, 0, len(childVars)+1)
+	xorVars := memory.MustPoolSlice[string](satPool, len(childVars)+1)
 	xorVars = append(xorVars, auxVar)
 	xorVars = append(xorVars, childVars...)
 	xorClause := NewXORClause(xorVars, true) // odd parity

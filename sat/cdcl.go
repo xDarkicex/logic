@@ -89,6 +89,12 @@ type CDCLSolver struct {
 	xorPropagations int64
 	xorConflicts    int64
 	gaussianRuns    int64
+
+	// Mode switching (focused/stable alternation)
+	modeSwitcher *ModeSwitcher
+
+	// WalkSAT pre-solver
+	walkSolver *WalkSolver
 }
 
 // IncrementalLazyBacktrack manages lazy backtracking optimization
@@ -116,7 +122,7 @@ type ChronologicalStats struct {
 func NewIncrementalLazyBacktrack() *IncrementalLazyBacktrack {
 	return &IncrementalLazyBacktrack{
 		enabled:                true,
-		reimplicationQueue:     make([]Literal, 0, 100),
+		reimplicationQueue:     memory.MustPoolSlice[Literal](satPool, 100),
 		chronologicalEnabled:   true,
 		reimplicationCache:     make(map[string]bool),
 		levelImplicationCount:  make(map[int]int),
@@ -127,7 +133,7 @@ func NewIncrementalLazyBacktrack() *IncrementalLazyBacktrack {
 func NewChronologicalStats() *ChronologicalStats {
 	return &ChronologicalStats{
 		adaptiveThreshold: 2,
-		successWindow:     make([]bool, 20), // 20-conflict sliding window
+		successWindow:     memory.MustPoolSlice[bool](satPool, 20)[:20], // 20-conflict sliding window
 		recentSuccessRate: 0.5,              // Start optimistic
 	}
 }
@@ -160,11 +166,11 @@ func NewCDCLSolver() *CDCLSolver {
 		conflicts:        0,
 		restartThreshold: 100,
 		conflictLimit:    10000000,
-		propagationQueue: make([]Literal, 0),
+		propagationQueue: memory.MustPoolSlice[Literal](satPool, 0)[:0],
 		queueHead:        0,
 		lbdSum:           0,
 		glueClauseCount:  0,
-		unassignedCache:  make([]string, 0),
+		unassignedCache:  memory.MustPoolSlice[string](satPool, 0)[:0],
 		cacheValid:       false,
 		propagationCache: make(map[string]bool),
 		// Inprocessing initialization
@@ -191,6 +197,8 @@ func NewCDCLSolver() *CDCLSolver {
 	solver.analyzer = NewFirstUIPAnalyzer()
 	solver.preprocessor = NewSATPreprocessor()
 	solver.inprocessor = NewModernInprocessor()
+	solver.modeSwitcher = NewModeSwitcher()
+	solver.walkSolver = NewWalkSolver()
 
 	// Initialize the tiered clause database:
 	// recentProtectionAge ~ 1000 conflicts is common; tune as needed or make it configurable.
@@ -245,7 +253,7 @@ func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverRe
 	c.conflicts = 0
 	c.lbdSum = 0
 	c.glueClauseCount = 0
-	c.unassignedCache = make([]string, 0)
+	c.unassignedCache = memory.MustPoolSlice[string](satPool, 0)[:0]
 	c.cacheValid = false
 	c.propagationCache = make(map[string]bool)
 
@@ -275,6 +283,22 @@ func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverRe
 	// Initial inprocessing at the start (if enabled)
 	if c.inprocessor != nil && c.inprocessConfig.EnableInitialInprocess {
 		c.performInprocessing()
+	}
+
+	// WalkSAT pre-solving on irredundant clauses
+	if c.walkSolver != nil {
+		irredundant := c.filterIrredundant()
+		if c.walkSolver.Solve(irredundant) {
+			c.statistics.TimeElapsed = time.Since(c.startTime).Nanoseconds()
+			return &SolverResult{
+				Satisfiable: true,
+				Assignment:  c.assignmentFromWalk(),
+				Statistics:  c.statistics,
+			}
+		}
+		if vsids, ok := c.heuristic.(*VSIDSHeuristic); ok {
+			c.walkSolver.ExportPhases(vsids)
+		}
 	}
 
 	// Setup timeout
@@ -365,6 +389,10 @@ func (c *CDCLSolver) SolveWithTimeout(cnf *CNF, timeout time.Duration) *SolverRe
 			if c.restartStrategy.ShouldRestart(c.statistics) {
 				c.restart()
 				c.statistics.Restarts++
+				// Mode switching: check at restart boundaries
+				if c.modeSwitcher.ShouldSwitch(c.conflicts, c.statistics.Decisions) {
+					c.modeSwitcher.Switch(c.conflicts, c.statistics.Decisions)
+				}
 				// **INPROCESSING INTEGRATION POINT 3**:
 				// After restart, we're at level 0 - good time for inprocessing
 				if c.shouldRunInprocessingAfterRestart() {
@@ -448,7 +476,7 @@ func (c *CDCLSolver) propagateXOR() *XORClause {
 			}
 
 			// Check for unit XOR propagation
-			unassignedVars := make([]string, 0)
+			unassignedVars := memory.MustPoolSlice[string](satPool, 0)[:0]
 			xorSum := false
 			for _, variable := range xorClause.Variables {
 				if value, assigned := c.assignment[variable]; assigned {
@@ -482,8 +510,8 @@ func (c *CDCLSolver) convertXORConflictToClause(xorClause *XORClause) *Clause {
 	// 3. Handle both assigned and unassigned variables correctly
 	// 4. Ensure compatibility with CDCL conflict analysis
 
-	assignedVars := make([]string, 0, len(xorClause.Variables))
-	unassignedVars := make([]string, 0, len(xorClause.Variables))
+	assignedVars := memory.MustPoolSlice[string](satPool, len(xorClause.Variables))
+	unassignedVars := memory.MustPoolSlice[string](satPool, len(xorClause.Variables))
 	currentXorSum := false
 
 	// Analyze current state of XOR variables
@@ -515,7 +543,7 @@ func (c *CDCLSolver) convertXORConflictToClause(xorClause *XORClause) *Clause {
 func (c *CDCLSolver) createFullXORConflictClause(xorClause *XORClause, assignedVars []string, currentXorSum bool) *Clause {
 	// When all variables are assigned and XOR is violated, we create a clause
 	// that forces at least one variable to flip its current assignment
-	literals := make([]Literal, 0, len(assignedVars))
+	literals := memory.MustPoolSlice[Literal](satPool, len(assignedVars))
 
 	// Add negation of each current assignment to force a change
 	for _, variable := range assignedVars {
@@ -544,7 +572,7 @@ func (c *CDCLSolver) createUnitXORConflictClause(xorClause *XORClause, assignedV
 	// If this leads to a conflict with other constraints, we create a clause that
 	// prevents the current assignment pattern of assigned variables
 	requiredValue := currentXorSum != xorClause.Parity
-	literals := make([]Literal, 0, len(assignedVars)+1)
+	literals := memory.MustPoolSlice[Literal](satPool, len(assignedVars)+1)
 
 	// Add the required assignment for the unassigned variable
 	literals = append(literals, Literal{
@@ -573,7 +601,7 @@ func (c *CDCLSolver) createUnitXORConflictClause(xorClause *XORClause, assignedV
 func (c *CDCLSolver) createPartialXORConflictClause(xorClause *XORClause, assignedVars []string, unassignedVars []string, currentXorSum bool) *Clause {
 	// With multiple unassigned variables, we create a clause that captures
 	// the constraint violation based on current partial assignment
-	literals := make([]Literal, 0, len(assignedVars)+len(unassignedVars))
+	literals := memory.MustPoolSlice[Literal](satPool, len(assignedVars)+len(unassignedVars))
 
 	// Strategy: Create a clause that prevents the current partial assignment
 	// while allowing flexibility for unassigned variables
@@ -766,7 +794,7 @@ func (c *CDCLSolver) performReimplication(targetLevel int) bool {
 	}
 
 	// Perform selective unassignment (only above target level)
-	unassignedVars := make([]string, 0)
+	unassignedVars := memory.MustPoolSlice[string](satPool, 0)[:0]
 	for variable := range c.assignment {
 		if c.trail.GetLevel(variable) > targetLevel {
 			unassignedVars = append(unassignedVars, variable)
@@ -1387,7 +1415,7 @@ func (c *CDCLSolver) chooseDecisionVariable() string {
 
 	// Use cached unassigned variables if available and valid
 	if !c.cacheValid {
-		c.unassignedCache = c.unassignedCache[:0] // Reuse slice capacity
+		c.unassignedCache = c.unassignedCache[:0]
 		for _, variable := range c.cnf.Variables {
 			if !c.assignment.IsAssigned(variable) {
 				c.unassignedCache = append(c.unassignedCache, variable)
@@ -1400,16 +1428,21 @@ func (c *CDCLSolver) chooseDecisionVariable() string {
 		return ""
 	}
 
-	// Use heuristic with proper error handling
+	// Stable mode: reluctant doubling may trigger a random pick
+	if c.modeSwitcher.Mode() == ModeStable && c.modeSwitcher.OnDecision() {
+		// Pick a pseudo-random variable from the unassigned cache
+		idx := int(c.statistics.Decisions) % len(c.unassignedCache)
+		return c.unassignedCache[idx]
+	}
+
+	// Use heuristic (focused mode or non-random stable step)
 	if c.heuristic != nil {
 		chosen := c.heuristic.ChooseVariable(c.unassignedCache, c.assignment)
-		// Validate that chosen variable is actually unassigned
 		if chosen != "" && !c.assignment.IsAssigned(chosen) {
 			return chosen
 		}
 	}
 
-	// Fallback to first unassigned with bounds check
 	if len(c.unassignedCache) > 0 {
 		return c.unassignedCache[0]
 	}
@@ -1434,6 +1467,9 @@ func (c *CDCLSolver) backtrack(level int) {
 	for _, variable := range unassignedVars {
 		delete(c.assignment, variable)
 	}
+
+	// Re-insert unassigned variables into the decision heap
+	c.heuristic.OnBacktrack(unassignedVars)
 
 	c.cacheValid = false // Invalidate unassigned cache
 	c.decisionLevel = level
@@ -1510,7 +1546,7 @@ func (c *CDCLSolver) deleteClauses() {
 	}
 
 	// Clean up cnf.Clauses and free deleted clauses
-	validClauses := make([]*Clause, 0, len(c.cnf.Clauses))
+	validClauses := memory.MustPoolSlice[*Clause](satPool, len(c.cnf.Clauses))
 	for _, clause := range c.cnf.Clauses {
 		if clause != nil && !clause.Deleted {
 			validClauses = append(validClauses, clause)
@@ -1651,11 +1687,11 @@ func (c *CDCLSolver) Reset() {
 	c.decisionLevel = 0
 	c.variableActivity = make(map[string]float64)
 	c.conflicts = 0
-	c.propagationQueue = make([]Literal, 0)
+	c.propagationQueue = memory.MustPoolSlice[Literal](satPool, 0)[:0]
 	c.queueHead = 0
 	c.lbdSum = 0
 	c.glueClauseCount = 0
-	c.unassignedCache = make([]string, 0)
+	c.unassignedCache = memory.MustPoolSlice[string](satPool, 0)[:0]
 	c.cacheValid = false
 	c.propagationCache = make(map[string]bool)
 
@@ -1669,6 +1705,11 @@ func (c *CDCLSolver) Reset() {
 	c.xorPropagations = 0
 	c.xorConflicts = 0
 	c.gaussianRuns = 0
+
+	// Reset mode switching
+	if c.modeSwitcher != nil {
+		c.modeSwitcher.Reset()
+	}
 
 	// Reset ILB state
 	if c.ilb != nil {
@@ -1708,4 +1749,38 @@ func (c *CDCLSolver) Reset() {
 	if c.analyzer != nil {
 		c.analyzer.Reset()
 	}
+}
+
+// filterIrredundant returns the subset of CNF clauses that are not learned.
+// These are the original formula clauses used by WalkSAT. CC=2.
+func (c *CDCLSolver) filterIrredundant() []*Clause {
+	if c.cnf == nil {
+		return nil
+	}
+	out := memory.MustPoolSlice[*Clause](satPool, len(c.cnf.Clauses))[:0]
+	for _, clause := range c.cnf.Clauses {
+		if clause != nil && !clause.Deleted && !clause.Learned {
+			out = append(out, clause)
+		}
+	}
+	return out
+}
+
+// assignmentFromWalk converts the WalkSAT best assignment to an Assignment map.
+// CC=2.
+func (c *CDCLSolver) assignmentFromWalk() Assignment {
+	a := make(Assignment)
+	if c.walkSolver == nil {
+		return a
+	}
+	for i, val := range c.walkSolver.bestValues {
+		if val == -1 || i >= len(c.walkSolver.varNames) {
+			continue
+		}
+		name := c.walkSolver.varNames[i]
+		if name != "" {
+			a[name] = val > 0
+		}
+	}
+	return a
 }

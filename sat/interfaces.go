@@ -45,6 +45,8 @@ type Heuristic interface {
 	ChooseVariable(unassigned []string, assignment Assignment) string
 	// Update is called after conflicts to update heuristic state
 	Update(conflictClause *Clause)
+	// OnBacktrack re-inserts unassigned variables into decision structures
+	OnBacktrack(unassigned []string)
 	// Reset clears heuristic state
 	Reset()
 	// Name returns heuristic name

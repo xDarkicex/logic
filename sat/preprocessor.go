@@ -1,5 +1,7 @@
 package sat
 
+import "github.com/xDarkicex/memory"
+
 // SATPreprocessor implements advanced CNF simplification techniques
 type SATPreprocessor struct {
 	originalVars   []string
@@ -16,12 +18,12 @@ func NewSATPreprocessor() *SATPreprocessor {
 }
 
 func (p *SATPreprocessor) Preprocess(cnf *CNF) (*CNF, error) {
-	p.originalVars = make([]string, len(cnf.Variables))
+	p.originalVars = memory.MustPoolSlice[string](satPool, len(cnf.Variables))[:len(cnf.Variables)]
 	copy(p.originalVars, cnf.Variables)
 
 	result := &CNF{
-		Clauses:   make([]*Clause, 0, len(cnf.Clauses)),
-		Variables: make([]string, 0, len(cnf.Variables)),
+		Clauses:   memory.MustPoolSlice[*Clause](satPool, len(cnf.Clauses)),
+		Variables: memory.MustPoolSlice[string](satPool, len(cnf.Variables)),
 		nextID:    cnf.nextID,
 	}
 
@@ -81,7 +83,7 @@ func (p *SATPreprocessor) unitPropagation(cnf *CNF) bool {
 		changed = true
 
 		// Remove satisfied clauses and falsified literals
-		newClauses := make([]*Clause, 0, len(cnf.Clauses))
+		newClauses := memory.MustPoolSlice[*Clause](satPool, len(cnf.Clauses))
 
 		for _, clause := range cnf.Clauses {
 			if clause == unitClause {
@@ -104,7 +106,7 @@ func (p *SATPreprocessor) unitPropagation(cnf *CNF) bool {
 			}
 
 			// Remove negated unit literal
-			newLiterals := make([]Literal, 0, len(clause.Literals))
+			newLiterals := memory.MustPoolSlice[Literal](satPool, len(clause.Literals))
 			for _, lit := range clause.Literals {
 				if !lit.Equals(unit.Negate()) {
 					newLiterals = append(newLiterals, lit)
@@ -157,7 +159,7 @@ func (p *SATPreprocessor) pureLiteralElimination(cnf *CNF) bool {
 	}
 
 	// Find pure literals
-	pureLiterals := make([]Literal, 0, len(literalCount))
+	pureLiterals := memory.MustPoolSlice[Literal](satPool, len(literalCount))
 	for variable, count := range literalCount {
 		if count > 0 {
 			pureLiterals = append(pureLiterals, Literal{Variable: variable, Negated: false})
@@ -171,7 +173,7 @@ func (p *SATPreprocessor) pureLiteralElimination(cnf *CNF) bool {
 	}
 
 	// Remove clauses containing pure literals
-	newClauses := make([]*Clause, 0, len(cnf.Clauses))
+	newClauses := memory.MustPoolSlice[*Clause](satPool, len(cnf.Clauses))
 
 	for _, clause := range cnf.Clauses {
 		satisfied := false
@@ -294,7 +296,7 @@ func (p *SATPreprocessor) updateVariables(cnf *CNF) {
 		}
 	}
 
-	cnf.Variables = make([]string, 0, len(varSet))
+	cnf.Variables = memory.MustPoolSlice[string](satPool, len(varSet))
 	for variable := range varSet {
 		cnf.Variables = append(cnf.Variables, variable)
 	}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/xDarkicex/logic/classical"
 	"github.com/xDarkicex/logic/core"
+	"github.com/xDarkicex/memory"
 )
 
 func TestAdvancedCDCLSolver(t *testing.T) {
@@ -376,7 +377,7 @@ func createPigeonHolePrincipleAdvanced(pigeons, holes int) *CNF {
 	cnf := NewCNF()
 
 	for p := 1; p <= pigeons; p++ {
-		clause := make([]Literal, holes)
+		clause := memory.MustPoolSlice[Literal](satPool, holes)[:holes]
 		for h := 1; h <= holes; h++ {
 			clause[h-1] = Literal{
 				Variable: fmt.Sprintf("p%dh%d", p, h),
@@ -404,7 +405,7 @@ func createRandom3SATAdvanced(variables, clauses int) *CNF {
 	cnf := NewCNF()
 
 	for i := 0; i < clauses; i++ {
-		literals := make([]Literal, 3)
+		literals := memory.MustPoolSlice[Literal](satPool, 3)[:3]
 		for j := 0; j < 3; j++ {
 			varNum := (i*3+j)%variables + 1
 			literals[j] = Literal{

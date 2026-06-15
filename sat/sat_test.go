@@ -8,6 +8,7 @@ import (
 
 	"github.com/xDarkicex/logic/classical"
 	"github.com/xDarkicex/logic/core"
+	"github.com/xDarkicex/memory"
 )
 
 func TestSATSystemIntegration(t *testing.T) {
@@ -195,7 +196,7 @@ func BenchmarkCDCLSolver(b *testing.B) {
 
 	// 50 variables, 200 clauses
 	for i := 0; i < 200; i++ {
-		literals := make([]Literal, 3)
+		literals := memory.MustPoolSlice[Literal](satPool, 3)[:3]
 		for j := 0; j < 3; j++ {
 			varNum := (i*3 + j) % 50
 			literals[j] = Literal{

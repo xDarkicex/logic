@@ -2,6 +2,8 @@ package sat
 
 import (
 	"time"
+
+	"github.com/xDarkicex/memory"
 )
 
 // ModernInprocessor implements state-of-the-art inprocessing techniques
@@ -95,7 +97,7 @@ func (m *ModernInprocessor) Inprocess(cnf *CNF, assignment Assignment, level int
 	if m.config.EnableFailedLitProbing && m.prober != nil {
 		startTime := time.Now()
 		// Create candidate literals from unassigned variables
-		candidates := make([]Literal, 0, len(cnf.Variables))
+		candidates := memory.MustPoolSlice[Literal](satPool, len(cnf.Variables))
 		for _, variable := range cnf.Variables {
 			if !assignment.IsAssigned(variable) {
 				candidates = append(candidates, Literal{Variable: variable, Negated: false})
@@ -249,7 +251,7 @@ func NewClauseVivifier() *ClauseVivifier {
 
 		tempSolver:     NewDPLLSolver(), // Use DPLL for temp solving
 		literalCache:   make(map[string]bool),
-		candidateCache: make([]Literal, 0, 20),
+		candidateCache: memory.MustPoolSlice[Literal](satPool, 20),
 	}
 }
 
@@ -320,7 +322,7 @@ func (cv *ClauseVivifier) canRemoveLiteral(clause *Clause, literalIndex int, ass
 	}
 
 	// Create test clause without this literal
-	testLiterals := make([]Literal, 0, len(clause.Literals)-1)
+	testLiterals := memory.MustPoolSlice[Literal](satPool, len(clause.Literals)-1)
 	for i, lit := range clause.Literals {
 		if i != literalIndex {
 			testLiterals = append(testLiterals, lit)
@@ -511,7 +513,7 @@ func NewInprocessSubsumption() *InprocessSubsumption {
 		enableSelfSubsumption: true,
 
 		literalOccurrence:     make(map[string][]*Clause),
-		subsumptionCandidates: make([]SubsumptionPair, 0, 100),
+		subsumptionCandidates: memory.MustPoolSlice[SubsumptionPair](satPool, 100),
 		processed:             make(map[int]bool),
 	}
 }
@@ -673,7 +675,7 @@ func (is *InprocessSubsumption) findCandidatesForClause(clause *Clause, remainin
 	}
 
 	// Convert map to slice
-	result := make([]*Clause, 0, len(candidates))
+	result := memory.MustPoolSlice[*Clause](satPool, len(candidates))
 	for _, candidate := range candidates {
 		result = append(result, candidate)
 	}
@@ -770,7 +772,7 @@ func (is *InprocessSubsumption) trySelfSubsumption(clause1, clause2 *Clause) boo
 	}
 
 	// Create resolvent (clause1 without resolveLit + clause2 without negated resolveLit)
-	resolvent := make([]Literal, 0)
+	resolvent := memory.MustPoolSlice[Literal](satPool, 0)[:0]
 
 	// Add literals from clause1 except the resolve literal
 	for _, lit := range clause1.Literals {
@@ -828,7 +830,7 @@ func (is *InprocessSubsumption) markForRemoval(cnf *CNF, clause *Clause) {
 
 func (is *InprocessSubsumption) removeMarkedClauses(cnf *CNF) {
 	// Remove and free deleted clauses
-	validClauses := make([]*Clause, 0, len(cnf.Clauses))
+	validClauses := memory.MustPoolSlice[*Clause](satPool, len(cnf.Clauses))
 	for _, clause := range cnf.Clauses {
 		if clause != nil && !clause.Deleted {
 			validClauses = append(validClauses, clause)
@@ -924,9 +926,9 @@ func NewBoundedVariableElimination() *BoundedVariableElimination {
 
 		positiveOccurrence: make(map[string][]*Clause),
 		negativeOccurrence: make(map[string][]*Clause),
-		eliminationQueue:   make([]EliminationCandidate, 0, 100),
+		eliminationQueue:   memory.MustPoolSlice[EliminationCandidate](satPool, 100),
 		substitutions:      make(map[string][]Literal),
-		resolutionCache:    make([]ResolventClause, 0, 1000),
+		resolutionCache:    memory.MustPoolSlice[ResolventClause](satPool, 1000),
 		processedClauses:   make(map[int]bool),
 	}
 }
@@ -1062,7 +1064,7 @@ func (bve *BoundedVariableElimination) generateResolvents(posOccurrences, negOcc
 // resolveClausesPair performs resolution between two clauses on the given variable
 func (bve *BoundedVariableElimination) resolveClausesPair(posClause, negClause *Clause, variable string) *ResolventClause {
 	// Collect literals from both clauses, excluding the resolved variable
-	resolventLits := make([]Literal, 0, len(posClause.Literals)+len(negClause.Literals)-2)
+	resolventLits := memory.MustPoolSlice[Literal](satPool, len(posClause.Literals)+len(negClause.Literals)-2)
 
 	// Add literals from positive clause (except positive occurrence of variable)
 	for _, lit := range posClause.Literals {
@@ -1126,7 +1128,7 @@ func (bve *BoundedVariableElimination) filterRedundantResolvents(resolvents []Re
 		return resolvents
 	}
 
-	filtered := make([]ResolventClause, 0, len(resolvents))
+	filtered := memory.MustPoolSlice[ResolventClause](satPool, len(resolvents))
 
 	for i, resolvent := range resolvents {
 		if resolvent.Redundant {
@@ -1374,7 +1376,7 @@ func (bve *BoundedVariableElimination) isEliminable(variable string, cnf *CNF, a
 // eliminatePureVariable removes clauses containing a pure variable
 func (bve *BoundedVariableElimination) eliminatePureVariable(variable string, cnf *CNF) {
 	// Remove all clauses containing this variable (in any polarity)
-	clausesToRemove := make([]*Clause, 0)
+	clausesToRemove := memory.MustPoolSlice[*Clause](satPool, 0)[:0]
 
 	// Collect clauses to remove
 	if posOccurrences := bve.positiveOccurrence[variable]; len(posOccurrences) > 0 {
@@ -1394,7 +1396,7 @@ func (bve *BoundedVariableElimination) eliminatePureVariable(variable string, cn
 
 // removeClausesContaining removes all clauses containing the specified variable
 func (bve *BoundedVariableElimination) removeClausesContaining(variable string, cnf *CNF) {
-	clausesToRemove := make([]*Clause, 0)
+	clausesToRemove := memory.MustPoolSlice[*Clause](satPool, 0)[:0]
 
 	// Collect all clauses containing this variable
 	if posOccurrences := bve.positiveOccurrence[variable]; len(posOccurrences) > 0 {
@@ -1442,7 +1444,7 @@ func (bve *BoundedVariableElimination) updateOccurrenceListsAfterElimination(eli
 // cleanupEliminatedVariables removes nil clauses and updates variable lists
 func (bve *BoundedVariableElimination) cleanupEliminatedVariables(cnf *CNF) {
 	// Remove and free deleted clauses
-	validClauses := make([]*Clause, 0, len(cnf.Clauses))
+	validClauses := memory.MustPoolSlice[*Clause](satPool, len(cnf.Clauses))
 	for _, clause := range cnf.Clauses {
 		if clause != nil && !clause.Deleted {
 			validClauses = append(validClauses, clause)
@@ -1461,7 +1463,7 @@ func (bve *BoundedVariableElimination) cleanupEliminatedVariables(cnf *CNF) {
 	}
 
 	// Rebuild variables slice
-	cnf.Variables = make([]string, 0, len(variableSet))
+	cnf.Variables = memory.MustPoolSlice[string](satPool, len(variableSet))
 	for variable := range variableSet {
 		cnf.Variables = append(cnf.Variables, variable)
 	}
@@ -1570,13 +1572,13 @@ func NewFailedLiteralProber() *FailedLiteralProber {
 		costThreshold:       50.0, // Cost threshold for candidate selection
 
 		probingSolver:       NewDPLLSolver(), // Use lightweight solver for probing
-		candidateQueue:      make([]ProbingCandidate, 0, 200),
+		candidateQueue:      memory.MustPoolSlice[ProbingCandidate](satPool, 200),
 		probingCache:        make(map[string]ProbingResult),
 		literalImplications: make(map[string][]Literal),
 		binaryImplications:  make(map[string][]Literal),
-		impliedUnits:        make([]Literal, 0, 50),
+		impliedUnits:        memory.MustPoolSlice[Literal](satPool, 50),
 		equivalenceClasses:  make(map[string]string),
-		probingOrder:        make([]ProbingCandidate, 0, 200),
+		probingOrder:        memory.MustPoolSlice[ProbingCandidate](satPool, 200),
 		watchedImplications: make(map[string][]*Clause),
 	}
 }
@@ -1654,8 +1656,8 @@ func (flp *FailedLiteralProber) probeLiteral(literal Literal, cnf *CNF, assignme
 
 	result := ProbingResult{
 		Failed:      false,
-		Implied:     make([]Literal, 0),
-		Equivalents: make([]Literal, 0),
+		Implied:     memory.MustPoolSlice[Literal](satPool, 0)[:0],
+		Equivalents: memory.MustPoolSlice[Literal](satPool, 0)[:0],
 		Probed:      literal, // NEW
 	}
 
@@ -1678,7 +1680,7 @@ func (flp *FailedLiteralProber) probeLiteral(literal Literal, cnf *CNF, assignme
 
 // performProbingWithUnitPropagation performs unit propagation during probing
 func (flp *FailedLiteralProber) performProbingWithUnitPropagation(cnf *CNF, assignment Assignment, probedLiteral Literal) ([]Literal, *Clause) {
-	implications := make([]Literal, 0)
+	implications := memory.MustPoolSlice[Literal](satPool, 0)[:0]
 	changed := true
 	depth := 0
 

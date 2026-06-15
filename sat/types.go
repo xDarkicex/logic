@@ -13,8 +13,13 @@ import (
 var (
 	clauseAlloc *memory.ShardedFreeList
 	litPool     *memory.Pool
+	satPool     *memory.Pool
 	allocOnce   sync.Once
 )
+
+func init() {
+	initAllocators()
+}
 
 func initAllocators() {
 	allocOnce.Do(func() {
@@ -28,6 +33,10 @@ func initAllocators() {
 		litPool, err = memory.NewPool(memory.DefaultConfig())
 		if err != nil {
 			panic(fmt.Errorf("failed to create lit pool: %v", err))
+		}
+		satPool, err = memory.NewPool(memory.DefaultConfig())
+		if err != nil {
+			panic(fmt.Errorf("failed to create sat pool: %v", err))
 		}
 	})
 }
@@ -98,7 +107,7 @@ func NewClause(literals ...Literal) *Clause {
 
 	// Remove duplicates or tautologies
 	if len(lits) > 0 {
-		unique := make([]Literal, 0, len(lits))
+		unique := memory.MustPoolSlice[Literal](satPool, len(lits))[:0]
 		unique = append(unique, lits[0])
 		for i := 1; i < len(lits); i++ {
 			prev := unique[len(unique)-1]
@@ -170,7 +179,7 @@ func (c *Clause) String() string {
 		return "⊥" // Empty clause (false)
 	}
 
-	parts := make([]string, len(c.Literals))
+	parts := memory.MustPoolSlice[string](satPool, len(c.Literals))[:len(c.Literals)]
 	for i, lit := range c.Literals {
 		parts[i] = lit.String()
 	}
@@ -247,7 +256,7 @@ func (wc *WatchedClause) GetWatchedLiterals() []Literal {
 		return []Literal{}
 	}
 
-	literals := make([]Literal, 0, 2)
+	literals := memory.MustPoolSlice[Literal](satPool, 2)[:0]
 	if wc.Watch1 >= 0 && wc.Watch1 < len(wc.Clause.Literals) {
 		literals = append(literals, wc.Clause.Literals[wc.Watch1])
 	}
@@ -269,8 +278,8 @@ type CNF struct {
 // NewCNF creates a new CNF formula
 func NewCNF() *CNF {
 	return &CNF{
-		Clauses:   make([]*Clause, 0),
-		Variables: make([]string, 0),
+		Clauses:   memory.MustPoolSlice[*Clause](satPool, 0),
+		Variables: memory.MustPoolSlice[string](satPool, 0),
 		nextID:    1,
 	}
 }
@@ -305,7 +314,7 @@ func (cnf *CNF) String() string {
 		return "⊤" // Empty CNF (true)
 	}
 
-	parts := make([]string, len(cnf.Clauses))
+	parts := memory.MustPoolSlice[string](satPool, len(cnf.Clauses))[:len(cnf.Clauses)]
 	for i, clause := range cnf.Clauses {
 		parts[i] = clause.String()
 	}
@@ -439,7 +448,7 @@ func (s SolverStatistics) GetLBDDistribution() string {
 		return "No LBD data"
 	}
 
-	parts := make([]string, 0, len(s.LBDDistribution))
+	parts := memory.MustPoolSlice[string](satPool, len(s.LBDDistribution))
 	for lbd := 1; lbd <= 10; lbd++ {
 		if count, exists := s.LBDDistribution[lbd]; exists && count > 0 {
 			parts = append(parts, fmt.Sprintf("LBD%d: %d", lbd, count))
@@ -552,10 +561,10 @@ type ClauseDatabase struct {
 // NewClauseDatabase creates an empty tiered database
 func NewClauseDatabase(maxSize int, recentProtectionAge int64) *ClauseDatabase {
 	return &ClauseDatabase{
-		coreClauses:         make([]*Clause, 0, 1024),
-		midClauses:          make([]*Clause, 0, 2048),
-		localClauses:        make([]*Clause, 0, 4096),
-		recentClauses:       make([]*Clause, 0, 4096),
+		coreClauses:         memory.MustPoolSlice[*Clause](satPool, 1024)[:0],
+		midClauses:          memory.MustPoolSlice[*Clause](satPool, 2048)[:0],
+		localClauses:        memory.MustPoolSlice[*Clause](satPool, 4096)[:0],
+		recentClauses:       memory.MustPoolSlice[*Clause](satPool, 4096)[:0],
 		recentProtectionAge: recentProtectionAge,
 		maxSize:             maxSize,
 		totalClauses:        0,
@@ -597,7 +606,7 @@ func (db *ClauseDatabase) Size() int { return db.totalClauses }
 
 // GetAllClauses returns a flat view over all tiers for stats/debug
 func (db *ClauseDatabase) GetAllClauses() []*Clause {
-	out := make([]*Clause, 0, db.totalClauses)
+	out := memory.MustPoolSlice[*Clause](satPool, db.totalClauses)[:0]
 	out = append(out, db.coreClauses...)
 	out = append(out, db.midClauses...)
 	out = append(out, db.localClauses...)
@@ -784,7 +793,7 @@ func (db *ClauseDatabase) ForcePromoteToTier(clause *Clause, tier int) bool {
 
 // Helper function
 func compactSlice(clauses []*Clause) []*Clause {
-	result := make([]*Clause, 0, len(clauses))
+	result := memory.MustPoolSlice[*Clause](satPool, len(clauses))[:0]
 	for _, clause := range clauses {
 		if clause != nil {
 			result = append(result, clause)
@@ -882,13 +891,13 @@ func (x *XORClause) ToRegularClauses() []*Clause {
 
 	// For larger XOR clauses, create exponential expansion
 	// This is expensive but necessary for correctness
-	clauses := make([]*Clause, 0)
+	clauses := memory.MustPoolSlice[*Clause](satPool, 32)[:0]
 
 	// Generate all possible assignments and keep those that violate the XOR
 	numVars := len(x.Variables)
 	for assignment := 0; assignment < (1 << numVars); assignment++ {
 		xorSum := false
-		literals := make([]Literal, numVars)
+		literals := memory.MustPoolSlice[Literal](satPool, numVars)[:numVars]
 
 		for i, variable := range x.Variables {
 			value := (assignment>>i)&1 == 1
@@ -919,7 +928,7 @@ type ExtendedCNF struct {
 func NewExtendedCNF() *ExtendedCNF {
 	return &ExtendedCNF{
 		CNF:        NewCNF(),
-		XORClauses: make([]*XORClause, 0),
+		XORClauses: memory.MustPoolSlice[*XORClause](satPool, 16)[:0],
 		nextXORID:  1,
 	}
 }

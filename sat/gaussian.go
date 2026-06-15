@@ -3,6 +3,8 @@ package sat
 
 import (
 	"time"
+
+	"github.com/xDarkicex/memory"
 )
 
 // GaussianEliminator implements Gauss-Jordan elimination for XOR constraints
@@ -102,8 +104,8 @@ func (ge *GaussianEliminator) PerformGaussianElimination(ecnf *ExtendedCNF, assi
 	}()
 
 	result := &GaussianResult{
-		UnitsLearned:      make([]Literal, 0),
-		XORClausesLearned: make([]*XORClause, 0),
+		UnitsLearned:      memory.MustPoolSlice[Literal](satPool, 0),
+		XORClausesLearned: memory.MustPoolSlice[*XORClause](satPool, 0),
 		ConflictFound:     false,
 	}
 
@@ -135,7 +137,7 @@ func (ge *GaussianEliminator) buildMatrix(xorClauses []*XORClause, assignment As
 	}
 
 	// Collect suitable XOR clauses
-	suitableXORs := make([]*XORClause, 0)
+	suitableXORs := memory.MustPoolSlice[*XORClause](satPool, 0)
 	variableSet := make(map[string]bool)
 
 	for _, xor := range xorClauses {
@@ -168,7 +170,7 @@ func (ge *GaussianEliminator) buildMatrix(xorClauses []*XORClause, assignment As
 	}
 
 	// Build variable mapping
-	ge.matrixToVar = make([]string, 0, len(variableSet))
+	ge.matrixToVar = memory.MustPoolSlice[string](satPool, len(variableSet))
 	ge.varToMatrix = make(map[string]int)
 
 	for variable := range variableSet {
@@ -180,9 +182,9 @@ func (ge *GaussianEliminator) buildMatrix(xorClauses []*XORClause, assignment As
 	ge.matrixCols = len(ge.matrixToVar) + 1 // +1 for augmented column (RHS)
 
 	// Initialize matrix
-	ge.matrix = make([][]bool, ge.matrixRows)
+	ge.matrix = memory.MustPoolSlice[[]bool](satPool, ge.matrixRows)[:ge.matrixRows]
 	for i := range ge.matrix {
-		ge.matrix[i] = make([]bool, ge.matrixCols)
+		ge.matrix[i] = memory.MustPoolSlice[bool](satPool, ge.matrixCols)[:ge.matrixCols]
 	}
 
 	// Fill matrix
@@ -265,7 +267,7 @@ func (ge *GaussianEliminator) eliminateRow(row1, row2 int) {
 // extractResults extracts unit propagations and learned XOR clauses
 func (ge *GaussianEliminator) extractResults(result *GaussianResult, assignment Assignment) {
 	for row := 0; row < ge.matrixRows; row++ {
-		activeVars := make([]string, 0)
+		activeVars := memory.MustPoolSlice[string](satPool, 0)
 
 		// Count active variables in this row
 		for col := 0; col < ge.matrixCols-1; col++ {
