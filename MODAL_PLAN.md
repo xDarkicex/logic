@@ -1007,6 +1007,127 @@ Deontic reasoning matters for the daemon because agent policies are deontic:
 
 ---
 
+## Four-State Deontic Minimization (Azzopardi, Gatt & Pace 2016)
+
+The ContractFactory in `deontic-logic-with-unknowns` implements algebraic minimization of deontic contracts using a 4-state lattice. This maps directly to our bit-vector operations for zero-overhead rule evaluation.
+
+### 45. The Four-State Deontic Lattice
+
+Every contract evaluates to exactly one of four terminal states. This is a 2-bit encoding:
+
+| State | Bits | Meaning | Algebraic role |
+|-------|------|---------|----------------|
+| **SAT** (Satisfied) | `00` | Norm fulfilled, no further obligation | Identity element: `C & SAT = C` |
+| **VIOL** (Violated) | `01` | Norm breached, irrecoverable | Absorbing zero: `C & VIOL = VIOL` |
+| **UNK** (Unknown) | `10` | Insufficient info to determine | Absorbing zero: `C & UNK = UNK` |
+| **BASE** (base norm) | `11` | Obligation/Permission/Prohibition — needs action evaluation | The actual deontic content |
+
+**Two absorbing states (VIOL, UNK) and one identity (SAT).** This is a De Morgan algebra with an extra "unknown" value — a 4-valued logic (like Belnap's FDE) applied to deontic reasoning.
+
+### 46. ContractFactory Minimization Identities
+
+Each composition operator reduces to minimal equivalent form using these algebraic laws:
+
+**Concurrent (C₁ & C₂):**
+```
+C & C = C                          // idempotence
+C & SAT = C                        // identity (SAT is neutral)
+SAT & SAT = SAT                    // identities compose
+C & VIOL = VIOL                    // absorption (violation)
+C & UNK = UNK                      // absorption (unknown)
+(C₁ & C₂) & C₃ = flatten({C₁, C₂, C₃})  // associativity + dedup via set union
+```
+
+**Composed (C₁ > C₂ — sequential):**
+```
+VIOL > C = VIOL                    // violation in first step propagates
+UNK > C = UNK                      // unknown in first step propagates
+SAT > C = C                        // (implicit — SAT triggers second step)
+```
+
+**Reparation (C₁ *> C₂ — if violated, do reparation):**
+```
+SAT *> C = SAT                     // primary contract satisfied, reparation skipped
+UNK *> C = UNK                     // primary contract indeterminate
+VIOL *> C = C                      // REPARATION TRIGGERS — violation activates the secondary
+```
+
+**Key insight:** Reparation is the deontic equivalent of try/catch. If the primary obligation is violated, the reparation contract activates. This models real-world penalty clauses: "You must pay by April 15. If you don't, you must pay with a 5% penalty."
+
+### 47. Static Reduction (SyntacticReduction)
+
+Each contract type can determine its state BEFORE evaluating actions, purely from structure:
+
+```
+Concurrent.Reduction():
+    reduce both children
+    if either = VIOL → return VIOL    // violation propagates upward
+    if either = UNK → return UNK      // unknown propagates upward
+    if either = SAT → return other    // identity collapse
+    else → return Concurrent(reduced_child₁, reduced_child₂)
+
+Composed.Reduction():
+    reduce first child
+    if first = VIOL → return VIOL
+    if first = UNK → return UNK
+    else → return self
+
+Reparation.Reduction():
+    if StartsWith() = SAT → return SAT     // primary already satisfied
+    if StartsWith() = UNK → return UNK     // primary indeterminate
+    else → return self
+```
+
+**This is O(depth) static analysis** — no action evaluation, no state space exploration. The reduction collapses the contract tree to its minimal form using only structural information.
+
+### 48. Bit-Vector Mapping for Zero-Overhead Evaluation
+
+The 2-bit encoding enables bitwise evaluation of deontic contract operations:
+
+```
+// 2-bit encoding per contract node
+SAT  = 0b00    VIOL = 0b01    UNK  = 0b10    BASE = 0b11
+
+// Concurrent: bitwise AND with absorption table for terminal states
+func concurrent(a, b uint8) uint8 {
+    if a == VIOL || b == VIOL { return VIOL }
+    if a == UNK  || b == UNK  { return UNK }
+    if a == SAT  { return b }
+    if b == SAT  { return a }
+    return concurrent_label(a, b)  // both BASE — encode as concurrent pair
+}
+
+// Composed: check first, propagate terminals
+func composed(a, b uint8) uint8 {
+    if a == VIOL || a == UNK { return a }
+    return composed_label(a, b)
+}
+
+// Reparation: check primary satisfaction
+func reparation(a, b uint8) uint8 {
+    if a == SAT { return SAT }
+    if a == UNK { return UNK }
+    return reparation_label(a, b)  // VIOL or BASE activates reparation b
+}
+```
+
+**For batch evaluation across multiple rules:** Pack contract states into `uint64` bit-vectors (like `classical/bitvector.go`). A single `AND` instruction evaluates all concurrent contracts simultaneously. Terminal state propagation uses a precomputed lookup table indexed by 2-bit pairs.
+
+**For the daemon:** Policy rules are contracts. "Must have recency > 0.5" = Obligation. "May return low-confidence memories" = Permission. "Must not return contradictory pairs" = Prohibition. Each evaluates to SAT/VIOL/UNK/BASE. The concurrent composition of all active policies gives the final deontic state of the retrieval — SAT = compliant, VIOL = non-compliant, UNK = indeterminate.
+
+### 49. Conflict Analysis via Automaton Exploration
+
+The `ConflictAnalysis` directory builds a transition system over contracts:
+- **States** = minimized contract expressions
+- **Transitions** = action sets (permutations of all actions)
+- **Conflict** = reachable state where a contract transitions to VIOL
+
+This is the deontic equivalent of model checking: `∃ path · contract →* VIOL`. A contract has a potential conflict if some sequence of actions leads to violation.
+
+**For verification:** The `oneStepAwayContracts()` method generates all possible next states. The contract transitions are deterministic given an action set. Conflict analysis is reachability on the contract state graph.
+
+---
+
 ## System Axioms (increasing strength)
 
 | System | Condition on R | Axiom | Use in daemon |
