@@ -105,7 +105,7 @@ There is zero `make([]T, ...)` in this package. The Go GC never traces reasoning
 
 ## Why xDarkicex/gobdd
 
-For BDD-based Boolean reasoning, this package integrates with [`github.com/xDarkicex/gobdd`](https://github.com/xDarkicex/gobdd) — the only complete ROBDD library in pure Go with full complement of BDD operations (And, Or, Not, Xor, Implies, Iff, Restrict, Compose, Exist, ForAll, SatisfyOne, SatisfyAll, NodeCount). The modal package's BDD bridge (`modal/bdd_bridge.go`) converts Boolean skeletons to GOBDD canonical forms for O(1) equivalence checking after construction.
+For BDD-based Boolean reasoning, this package integrates with [`github.com/xDarkicex/gobdd`](https://github.com/xDarkicex/gobdd) — the only complete GOBDD library in pure Go with full complement of BDD operations (And, Or, Not, Xor, Implies, Iff, Restrict, Compose, Exist, ForAll, SatisfyOne, SatisfyAll, NodeCount). The modal package's BDD bridge (`modal/bdd_bridge.go`) converts Boolean skeletons to GOBDD canonical forms for O(1) equivalence checking after construction.
 
 For R4, SAT-backed equivalence is sufficient (two SAT calls). BDDs are available for O(1) repeated queries.
 
@@ -230,10 +230,14 @@ See [`docs/RESEARCH.md`](docs/RESEARCH.md) for the complete paper list and licen
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — package map, off-heap allocation strategy, data flow, component diagram, tuning constants
 - [RESEARCH.md](docs/RESEARCH.md) — academic papers, reference implementations, MIT licensing statement
 - [xDarkicex/memory](https://github.com/xDarkicex/memory) — off-heap allocator (mmap-backed, lock-free, Hyaline SMR)
-- [xDarkicex/gobdd](https://github.com/xDarkicex/gobdd) — ROBDD library in pure Go (BDD bridge for O(1) equivalence)
+- [xDarkicex/gobdd](https://github.com/xDarkicex/gobdd) — GOBDD library in pure Go (BDD bridge for O(1) equivalence)
 
 ---
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+---
+
+Made with love for Gophers who need rock-solid logic tooling.
