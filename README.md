@@ -8,9 +8,31 @@
 [![Coverage](https://img.shields.io/badge/coverage-77--100%25-brightgreen.svg)]()
 [![Race](https://img.shields.io/badge/race-clean-brightgreen.svg)]()
 
-**A complete logic reasoning engine in pure Go.** Classical propositional logic, industrial-strength CDCL SAT solving (Kissat-derived), modal logic with Kripke semantics and temporal/epistemic reasoning, and full fuzzy inference — all off-heap, all zero `make([]T)`, all race-clean.
+**A complete reasoning engine in pure Go.** Classical propositional logic, a Kissat-derived
+CDCL SAT solver, modal logic with Kripke semantics and LTL/epistemic reasoning, and
+full fuzzy inference — all off-heap, all zero `make([]T)`, all race-clean.
 
-670+ tests. 77–100% coverage across 8 packages. The Go GC never scans reasoning data.
+670+ tests. 77–100% coverage across 8 packages. The Go GC never scans reasoning
+data. Built for formal verification, agentic reasoning, and embedded inference
+at predictable latency.
+
+---
+
+## Contents
+
+- [Why logic](#why-logic)
+- [What we solve](#what-we-solve)
+- [Quick start](#quick-start)
+- [Packages](#packages)
+- [SAT solver](#sat-solver)
+- [Modal logic](#modal-logic)
+- [Fuzzy logic](#fuzzy-logic)
+- [Why xDarkicex/memory](#why-xdarkicexmemory)
+- [Why xDarkicex/gobdd](#why-xdarkicexgobdd)
+- [Architecture](#architecture)
+- [Research backing](#research-backing)
+- [When to use / not use](#when-to-use)
+- [Links](#links)
 
 ---
 
@@ -31,17 +53,36 @@ This package gives you all four reasoning paradigms behind one interface, backed
 
 ## What we solve
 
-**Classical:** `(A → B) ∧ (B → C) → (A → C)` — is this a tautology? Instant answer with truth tables or the fluent evaluator.
+**Classical.** Prove `(A → B) ∧ (B → C) → (A → C)` is a tautology. Truth tables,
+fluent evaluator, bitwise operations, DeMorgan and Distributive law verification.
+Expression parser with all 7 gates plus implication and biconditional.
 
-**SAT:** Is there an assignment satisfying 10,000 Boolean constraints with XOR parity requirements? CDCL with Gaussian elimination finds it or proves unsatisfiability.
+**SAT.** Find an assignment satisfying 10,000 Boolean constraints with XOR parity
+requirements — or prove none exists. 1st UIP clause learning with LBD quality scoring.
+Binary max-heap VSIDS for O(log n) variable selection. Gaussian elimination over GF(2)
+for native XOR. WalkSAT pre-solving with phase warm-start. Inprocessing (BVE,
+subsumption, vivification) between restarts.
 
-**Modal:** Does agent *a* know that agent *b* knows φ in an S5 epistemic frame? Kripke evaluator with multi-agent accessibility relations.
+**Modal.** Kripke semantics with accessibility relations. Couvreur on-the-fly SCC
+emptiness for temporal logic. Multi-agent epistemic reasoning with K/D/T/B/S4/S5
+axiom enforcement. Bisimulation contraction with BDD-refined partition signatures.
+State-space reduction: stutter invariance, Hopcroft DFA minimization, world-set
+encoding (O(1) bit-vector membership). Zielonka parity games for reactive synthesis.
 
-**Temporal:** Does this LTL property hold along all session timelines? Tableau prover with Couvreur on-the-fly SCC emptiness.
+**Temporal.** LTL with □ (always), ◇ (eventually), U (until), ○ (next). Tableau
+prover with level-based degeneralization. Now/Next/Promise decomposition. LTL
+splitting into obligation/suspendable/rest components. Cut-point relabeling via
+articulation points.
 
-**Fuzzy:** Given temperature = 22°C and humidity = 65%, what heater power is recommended? Mamdani engine with 20 membership functions and centroid defuzzification.
+**Fuzzy.** Mamdani and TSK engines with 20 membership functions, 7 t-norms, 9
+t-conorms, 4 implications, 7 activation methods, 6 defuzzifiers. FCM clustering
+with Xie-Beni validation. ANFIS gradient-descent training. Type-2 sets with
+Footprint of Uncertainty. SHAP and GNN rule extraction.
 
-**Together:** Is the agent's belief state logically consistent with the temporal specification, under fuzzy uncertainty? Cascade: SAT checks the Boolean skeleton, tableau checks the modal fragment, fuzzy bridge resolves continuous-valued atoms.
+**Together.** 3-tier cascade: syntactic check → BDD skeleton equivalence → SAT
+solve → tableau proof. Fuzzy bridge resolves continuous-valued atoms into the
+Boolean skeleton. PINS dependency matrix for incremental evaluation. Guard-based
+partial-order reduction for state-space pruning.
 
 ---
 
@@ -78,9 +119,9 @@ crisp := fuzzy.Centroid(output)
 
 | Package | Purpose | Coverage | Tests |
 |---------|---------|----------|-------|
-| `classical` | Boolean gates, truth tables, tautology/contradiction, expression parser, bit vectors | 71% | 31 |
-| `sat` | CDCL solver, DPLL, XOR/Gaussian, MAX-SAT, Tseitin CNF, mode switching, WalkSAT, DPLL(T) | 77% | ~180 |
-| `modal` | Kripke semantics, tableau prover, LTL, epistemic logic, axioms, BDD bridge, hash consing, cascade, bisimulation, POR | 88% | ~390 |
+| `classical` | All 7 Boolean gates, fluent evaluator, truth tables, tautology/contradiction, DeMorgan/Distributive, expression parser, bit vectors with bitwise ops, benchmark framework | 71% | 31 |
+| `sat` | Kissat-derived CDCL, DPLL fallback, XOR/Gaussian, MAX-SAT, Tseitin CNF, mode switching, WalkSAT, DPLL(T) theory plugins, fuzzy-SMT gradient descent | 77% | ~180 |
+| `modal` | Kripke frame, Couvreur emptiness, LTL + epistemic, BDD bridge, hash consing, cascade, bisimulation, world-set, PINS, POR, Zielonka parity, Hopcroft DFA, stutter invariance, LTL splitting, cut-point relabeling, SAT optimizations | 88% | ~390 |
 | `fuzzy` | Mamdani + TSK engines, 20 MFs, 7 t-norms, 9 t-conorms, defuzzification, clustering | 89% | ~55 |
 | `fuzzy/type2` | Interval Type-2 sets with Footprint of Uncertainty | 99% | — |
 | `fuzzy/anfis` | Adaptive Neuro-Fuzzy Inference System, gradient-descent training | 98% | — |
@@ -132,21 +173,24 @@ docs/                 THEORY.md, ARCHITECTURE.md, RESEARCH.md
 
 ---
 
-## SAT Solver
+## SAT solver
 
-A Kissat-derived CDCL solver with modern optimizations.
+A Kissat-derived CDCL solver. Kissat (Biere, 2020–2024) consistently places top-3 at
+the SAT Competition. MIT-licensed. Our solver adapts its architecture to Go with
+off-heap memory — same algorithms, zero GC interaction.
 
-| Feature | Description |
-|---------|-------------|
-| **Watched literals** | Two-watched-literal scheme, O(1) amortized propagation |
-| **1st UIP analysis** | First Unique Implication Point with LBD-based clause quality |
-| **VSIDS heap** | Binary max-heap, O(log n) variable selection with LRB + anti-aging |
-| **Mode switching** | Focused/stable alternation with reluctant doubling (Kissat-derived) |
-| **WalkSAT** | Pre-solving via probabilistic local search, phase warm-start for CDCL |
-| **Gaussian elimination** | Native XOR constraint handling over GF(2) |
-| **Inprocessing** | Bounded variable elimination, subsumption, failed literal probing |
-| **DPLL(T)** | Theory solver integration (Z3-derived architecture) |
-| **MAX-SAT** | Weighted maximum satisfiability via binary search |
+| Feature | Algorithm | Impact |
+|---------|-----------|--------|
+| **Watched literals** | Two-watched-literal scheme (Chaff, 2001) | O(1) amortized propagation |
+| **1st UIP analysis** | First Unique Implication Point (Zhang et al., 2001) | Short, reusable learned clauses |
+| **LBD tracking** | Literal Block Distance (Glucose, 2009) | Glue clause (LBD ≤ 2) protection |
+| **VSIDS heap** | Binary max-heap, O(log n) selection | LRB blending + anti-aging decay |
+| **Mode switching** | Focused/stable with reluctant doubling (Kissat) | Exploitation/exploration balance |
+| **WalkSAT** | Probabilistic make/break local search | Sub-ms easy solves, warm-start phases |
+| **Gaussian elimination** | Gauss-Jordan over GF(2) | Native XOR without exponential CNF blowup |
+| **Inprocessing** | BVE, subsumption, vivification (Järvisalo et al., 2012) | Formula reduction between restarts |
+| **DPLL(T)** | Theory plugin interface (Z3 architecture) | SMT-style theory integration |
+| **MAX-SAT** | Binary search on weight threshold | Weighted maximum satisfiability |
 
 ```go
 // Full CDCL with XOR support
@@ -163,7 +207,66 @@ fmt.Println(result.Satisfiable, result.Assignment)
 
 ---
 
-## Fuzzy Logic
+## Modal logic
+
+Kripke semantics with accessibility relations. Tableau prover with on-the-fly SCC
+emptiness (Couvreur, 1999). BDD bridge for O(1) Boolean equivalence after
+construction. Hash consing for O(1) structural equality of formulas.
+
+**Axiom systems** — K, D, T, B, S4, S5. Enforce frame properties (reflexivity,
+symmetry, transitivity, seriality) on accessibility relations. Validate frames
+against axiom systems.
+
+**Temporal logic (LTL)** — □ (always), ◇ (eventually), U (until), ○ (next).
+Level-based degeneralization converts generalized Büchi to classical Büchi.
+Now/Next/Promise decomposition (Couvreur FM). LTL splitting into obligation /
+suspendable / rest components for independent solving.
+
+**Epistemic logic** — Multi-agent Kaφ operators. S5 accessibility for knowledge,
+distributed knowledge, and common knowledge. Kripke evaluator over multi-agent
+frames.
+
+**State-space reduction** — Bisimulation contraction with BDD-refined signature
+matching (Bustan & Grumberg, 2003). Stutter invariance for property-preserving
+state merging. Hopcroft partition refinement for DFA minimization. World-set
+encoding for O(1) bit-vector world membership.
+
+**Automata and verification** — Zielonka parity game solver for reactive synthesis.
+Formula rewriting (simplify, push-negation, NNF). Cut-point relabeling via
+articulation points. Independent component decomposition. PINS dependency matrix
+for incremental evaluation. Guard-based partial-order reduction. Dead subspace
+tracking across CDCL restarts.
+
+**Cascade pipeline** — 3-tier cheap-first: syntactic check → BDD skeleton
+equivalence → SAT solve → tableau/Couvreur proof. The BDD bridge converts
+modal subformulas to fresh Boolean variables, SAT checks the skeleton, tableau
+handles the modal fragment.
+
+```go
+ctx := modal.NewBDDCtx(256, pool)
+frame := modal.NewFrame(pool, arena)
+frame.AddWorld() // w0
+frame.AddWorld() // w1
+frame.AddAccessibility(modal.RelationK, 0, 1)
+
+// Enforce S5 on epistemic relation
+modal.EnforceSystemS5(frame, modal.RelationE)
+
+// Satisfiability via Couvreur on-the-fly emptiness
+prover := modal.NewCouvreurProver(pool, arena)
+sat, model := prover.ProveSatisfiable(formula, frame)
+
+// Bisimulation contraction
+contractor := modal.NewBisimContractor(ctx, pool)
+reduced := contractor.Contract(model)
+
+// Cascade: syntactic → BDD → SAT → tableau
+result := modal.NewCascade(pool).Prove(formula, frame)
+```
+
+---
+
+## Fuzzy logic
 
 A complete fuzzy inference system — Mamdani and TSK engines, 20 membership functions, 7 t-norms, 9 t-conorms, 4 implications, 7 activation methods, 6 defuzzifiers, hedges, linguistic variables with Pool-backed terms, multi-strategy arbitration with reliability tracking.
 
@@ -197,11 +300,20 @@ crisp := fuzzy.Centroid(result)
 
 This package is grounded in the academic SAT, modal logic, and fuzzy systems literature. Key influences:
 
-**CDCL SAT**: GRASP (Silva & Sakallah 1999), Chaff (Moskewicz et al. 2001), 1st UIP (Zhang et al. 2001), Glucose/LBD (Audemard & Simon 2009), Kissat (Biere 2020–2024)
+**CDCL SAT** — GRASP: A Search Algorithm for Propositional Satisfiability
+(Silva & Sakallah, 1999). Chaff: Engineering an Efficient SAT Solver (Moskewicz
+et al., 2001). Efficient Conflict Driven Learning (Zhang et al., 2001). Predicting
+Learnt Clauses Quality (Audemard & Simon, Glucose 2009). Kissat (Biere, SAT
+Competition 2020–2024). WalkSAT (Selman, Kautz, Cohen, AAAI 1994). Inprocessing
+Rules (Järvisalo, Heule, Biere, IJCAR 2012).
 
-**Modal logic**: On-the-fly emptiness (Couvreur 1999), Level-based degeneralization (Bloemen et al. 2019), Simulation-based reduction (Bustan & Grumberg 2003), Zielonka parity games (Zielonka 1998)
+**Modal and automata** — On-the-fly Emptiness (Couvreur, 1999). Level-Based
+Degeneralization (Bloemen et al., 2019). Simulation-Based State Reduction
+(Bustan & Grumberg, 2003). Zielonka Parity Games (Zielonka, 1998). Hopcroft
+DFA Minimization (Hopcroft, 1971).
 
-**Memory management**: Hyaline SMR (Nikolaev & Ravindran, PLDI 2021) via `xDarkicex/memory`
+**Memory** — Hyaline: Fast and Transparent Lock-Free Memory Reclamation
+(Nikolaev & Ravindran, PLDI 2021) via `xDarkicex/memory`.
 
 See [`docs/RESEARCH.md`](docs/RESEARCH.md) for the complete paper list and licensing statement. All algorithms are re-derived from published mathematics. No non-MIT code was used.
 
