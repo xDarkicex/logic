@@ -14,26 +14,46 @@ type Edge struct {
 }
 
 // Frame is a Kripke frame: a set of worlds and accessibility relations between them.
-// Stores edges in a flat Pool slice — no maps, no pointer chasing.
+// Stores edges in flat Pool slices — no maps, no pointer chasing.
+// Weighted edges support the fuzzy-modal bridge (Phase 6).
 type Frame struct {
-	worlds []World // Arena-backed, grow-only
-	edges  []Edge  // Pool-backed, append-only during construction
-	pool   *memory.Pool
-	arena  *memory.Arena
+	worlds        []World        // Arena-backed, grow-only
+	edges         []Edge         // Pool-backed, unweighted edges
+	weightedEdges []WeightedEdge // Pool-backed, weighted edges
+	pool          *memory.Pool
+	arena         *memory.Arena
+}
+
+// WeightedEdge is a directed accessibility relation with a fuzzy weight in [0,1].
+// Used by the fuzzy-modal bridge for daemon hop expansion (etaWhy=0.7, etaHow=0.4).
+type WeightedEdge struct {
+	Src    World
+	Dst    World
+	Rel    RelationType
+	Weight TruthValue
+}
+
+// WeightedTarget is a destination world with its edge weight.
+type WeightedTarget struct {
+	Dst    World
+	Weight TruthValue
 }
 
 // NewFrame creates a Frame with the given allocators.
-// The worlds slice is Arena-backed. The edges slice is Pool-backed.
+// The worlds slice is Arena-backed. The edges slices are Pool-backed.
 func NewFrame(pool *memory.Pool, arena *memory.Arena) *Frame {
 	worlds := memory.MustArenaSlice[World](arena, 64)
 	worlds = worlds[:0]
 	edges := memory.MustPoolSlice[Edge](pool, 256)
 	edges = edges[:0]
+	wEdges := memory.MustPoolSlice[WeightedEdge](pool, 64)
+	wEdges = wEdges[:0]
 	return &Frame{
-		worlds: worlds,
-		edges:  edges,
-		pool:   pool,
-		arena:  arena,
+		worlds:        worlds,
+		edges:         edges,
+		weightedEdges: wEdges,
+		pool:          pool,
+		arena:         arena,
 	}
 }
 
@@ -51,6 +71,51 @@ func (f *Frame) WorldCount() int { return len(f.worlds) }
 func (f *Frame) AddRelation(src, dst World, rel RelationType) {
 	f.edges = append(f.edges, Edge{Src: src, Dst: dst, Rel: rel})
 }
+
+// AddWeightedRelation adds a weighted edge for the fuzzy-modal bridge.
+// The weight must be in [0, 1].
+func (f *Frame) AddWeightedRelation(src, dst World, rel RelationType, weight TruthValue) {
+	f.weightedEdges = append(f.weightedEdges, WeightedEdge{
+		Src: src, Dst: dst, Rel: rel, Weight: weight,
+	})
+}
+
+// WeightedAccessible returns all worlds accessible from w with their edge weights.
+// Searches both unweighted (weight=1.0) and weighted edges. O(E).
+func (f *Frame) WeightedAccessible(w World, rel RelationType) []WeightedTarget {
+	count := 0
+	for i := range f.edges {
+		if f.edges[i].Src == w && f.edges[i].Rel == rel {
+			count++
+		}
+	}
+	for i := range f.weightedEdges {
+		if f.weightedEdges[i].Src == w && f.weightedEdges[i].Rel == rel {
+			count++
+		}
+	}
+	if count == 0 {
+		return nil
+	}
+	result := memory.MustPoolSlice[WeightedTarget](f.pool, count)
+	result = result[:0]
+	for i := range f.edges {
+		if f.edges[i].Src == w && f.edges[i].Rel == rel {
+			result = append(result, WeightedTarget{Dst: f.edges[i].Dst, Weight: 1.0})
+		}
+	}
+	for i := range f.weightedEdges {
+		if f.weightedEdges[i].Src == w && f.weightedEdges[i].Rel == rel {
+			result = append(result, WeightedTarget{
+				Dst: f.weightedEdges[i].Dst, Weight: f.weightedEdges[i].Weight,
+			})
+		}
+	}
+	return result
+}
+
+// WeightedEdgeCount returns the number of weighted edges.
+func (f *Frame) WeightedEdgeCount() int { return len(f.weightedEdges) }
 
 // Accessible returns all worlds accessible from w via the given relation type.
 // O(E) linear scan — E is typically small (< 1000 edges).
