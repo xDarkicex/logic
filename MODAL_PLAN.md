@@ -1451,6 +1451,36 @@ if SAT: get_model()            // extract counterexample
 
 ---
 
+## Vector Symbolic Architecture for World-Set Encoding (Embeddenator)
+
+Embeddenator implements sparse ternary VSA (Vector Symbolic Architecture) — 10,000-dimensional vectors with {-1, 0, +1} elements, ~1% non-zero. MIT-licensed. VSA operations have direct modal logic interpretations.
+
+### Three VSA Operations
+
+| Operation | Symbol | Meaning | Modal analog |
+|-----------|--------|---------|-------------|
+| **Bundle** | ⊕ | Element-wise addition: superposition of vectors. `A ⊕ B` represents both A and B simultaneously | `◇(A ∨ B)` — both accessible in the current world |
+| **Bind** | ⊗ | Element-wise multiplication: associates two vectors. `A ⊗ B ≈ I` when A ≈ B | Association: `daemon.bind(memory, context)` — context-dependent encoding |
+| **Unbind** | ⊘ | `A ⊗ (A ⊗ B) ≈ B` — recover B from the bound pair given A | Context-dependent retrieval: give context, recover memory |
+
+### Bundling = World Superposition
+
+In VSA, multiple vectors can be superposed into a single vector: `bundle = A ⊕ B ⊕ C`. Probing the bundle with a query vector Q uses cosine similarity. If `cos(Q, bundle) > 0.75`, Q is "in" the bundle.
+
+**For modal logic:** Bundle ALL worlds accessible from world `w` into a single VSA vector `R*(w) = ⊕{v : R(w,v)}`. Then `◇P` checking becomes: encode P as a VSA vector, compute `cos(encode(P), R*(w))`. If > threshold, P holds in some accessible world. The threshold (0.75) maps to the fuzzy truth threshold.
+
+**Key property:** Bundle size is O(1) regardless of the number of accessible worlds. You can encode 1 world or 1000 worlds into the same 10K-dimensional vector. The noise floor rises linearly with bundle size, but the cosine similarity threshold handles this.
+
+### Ternary Encoding = 3-Valued Modal Logic
+
+{-1, 0, +1} trits map to 3-valued logic: false, unknown, true. Our deontic logic already has 4 states, but a ternary encoding could encode SAT/VIOL/UNK in a single trit (BASE is not a terminal state — it's the absence of a terminal state). `SAT = +1, VIOL = -1, UNK = 0`.
+
+### For the Daemon
+
+The daemon's embedding vectors (~768-dimensional dense floats) could be replaced by or augmented with VSA vectors (~10K-dimensional sparse ternary, ~400 bytes each). VSA vectors support algebraic operations that dense embeddings don't: bind two memories, bundle related memories into a topic cluster, unbind a memory from its context.
+
+---
+
 ## System Axioms (increasing strength)
 
 | System | Condition on R | Axiom | Use in daemon |
