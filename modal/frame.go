@@ -163,9 +163,15 @@ type TruthValueSlice []TruthValue
 
 // NewModel creates a Model with the given frame and variable count.
 // The valuation is pre-allocated for all worlds × variables.
+// If arena is nil, Pool-backed storage is used for the outer valuation slice.
 func NewModel(frame *Frame, numVars int, pool *memory.Pool, arena *memory.Arena) *Model {
 	wc := frame.WorldCount()
-	val := memory.MustArenaSlice[TruthValueSlice](arena, wc)
+	var val []TruthValueSlice
+	if arena != nil {
+		val = memory.MustArenaSlice[TruthValueSlice](arena, wc)
+	} else {
+		val = memory.MustPoolSlice[TruthValueSlice](pool, wc)
+	}
 	val = val[:wc]
 	for i := 0; i < wc; i++ {
 		slice := memory.MustPoolSlice[TruthValue](pool, numVars)
