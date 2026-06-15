@@ -724,6 +724,97 @@ vset_least_fixpoint(set, rel)     → μX. set ∪ rel(X)
 
 ---
 
+## Formal Foundations: Inductive/Coinductive Duality (Coq, Coupet-Grimal 2002)
+
+The Rocq (Coq) formalization of LTL reveals the mathematical structure that implementations often obscure: temporal operators are fundamentally **fixpoints** over infinite streams.
+
+### 31. Inductive vs Coinductive Operators
+
+This is the most important structural insight. LTL operators divide cleanly into two classes based on their witness type:
+
+| Operator | Fixpoint | Coq type | Witness | Check algorithm |
+|----------|----------|----------|---------|-----------------|
+| `◇P` (eventually) | Least (μ) | **Inductive** | Finite prefix ending in `P` | Find a reachable state satisfying `P` |
+| `P U Q` (until) | Least (μ) | **Inductive** | Finite prefix of `P` ending in `Q` | Find a reachable state satisfying `Q` with `P` on the path |
+| `□P` (always) | Greatest (ν) | **CoInductive** | Infinite proof: `P` holds at every step | Show `P` is invariant under the transition relation |
+| `P W Q` (weak until) | Greatest (ν) | **CoInductive** | Infinite proof: either `Q` holds, or `P` holds and the property coinduces | Check invariant preservation |
+| `□◇P` (infinitely often) | ν then μ | `always(eventually(P))` | For every step, a finite witness of `P` eventually | Nested DFS |
+| `◇□P` (eventually always) | μ then ν | `eventually(always(P))` | Finite prefix to a point from which `□P` holds | SCC-based: find a terminal SCC where `P` is invariant |
+
+**Why this matters for implementation:** Inductive operators can be checked with **finite state space search** (BFS/DFS to find a witness). Coinductive operators require **invariant checking** (prove preservation across all transitions). The tableau method handles both, but understanding which is which guides algorithm selection.
+
+### 32. Formally Proved Theorems
+
+These are theorems proven correct in Coq — they are the mathematical laws of LTL, not implementation details.
+
+**Monotonicity (congruence):**
+```
+□(P → Q) → (◇P → ◇Q)    // congruence_eventually
+□(P → Q) → (□P → □Q)    // congruence_always  (this is the K axiom!)
+□(P → Q) → (□◇P → □◇Q)  // congruence_infinitely_often
+```
+
+**Reductions:**
+```
+P U Q → ◇Q               // until_eventually
+◇P → (¬P) U P            // eventually_until (requires decidability of P)
+◇P → P U ◇P              // until expansion (variant)
+```
+
+**Fixpoint properties:**
+```
+□P → □□P                 // always_idempotence (S4 axiom, proved as theorem)
+□P → P                   // holds when the model has no deadlocks
+```
+
+**Safety proof rule (invariant induction):**
+```
+(∀s. init(s) → P(s))  ∧  invariant(P)  →  □P(on_all_runs)
+// If P holds initially and is preserved by every step, P holds always
+```
+
+**Termination (well-founded measure):**
+```
+Given well_founded(<) and measure m: state → α:
+(∀v. □(A(s) ∧ m(s)=v → (B U (C ∨ (A ∧ m(s) < v)))))
+→ (A → B U C)
+// If a measure strictly decreases each step until the goal is reached,
+// then the goal is eventually reached (no infinite descent)
+```
+
+**Duality theorems:**
+```
+□P ≡ ¬◇¬P               // always = not eventually not
+◇P ≡ ¬□¬P              // eventually = not always not
+P U Q ≡ ¬(¬Q W (¬P ∧ ¬Q))  // until dual to weak until
+```
+
+### 33. The Safety-Progress Hierarchy (Formalized)
+
+Coupet-Grimal's formalization defines the classical hierarchy:
+
+```
+invariant(P) = ∀s,t. step(s,t) ∧ P(s) → P(t)     // one-step preservation
+safe(P) = ∀str. run(str) → □P(str)                // holds on all runs
+leads_to(P,Q) = ∀s,t. P(s) ∧ step(s,t) → Q(t)    // one-step leads-to
+fairness(a) = □◇enabled(a) → ◇takes(a)           // weak fairness
+fairstr = □◇enabled(fair_step) → □◇takes(fair_step)  // strong fairness on streams
+```
+
+### 34. Why This Changes Our Implementation
+
+The inductive/coinductive distinction directly informs our Go code structure:
+
+1. **Inductive operators (`◇`, `U`)**: Implement as **BFS/DFS reachability** in `semantics.go`. These are finite searches — they terminate when a witness is found.
+
+2. **Coinductive operators (`□`, `W`)**: Implement as **invariant checks** in `axioms.go`. These require proof that a property is preserved across all accessible worlds.
+
+3. **Mixed fixpoints (`□◇`, `◇□`)**: Implement via **SCC decomposition** in `tableau.go`. `□◇P` requires finding an SCC where every cycle visits `P`. `◇□P` requires finding a terminal SCC where all states satisfy `P`.
+
+4. **Well-founded termination**: The `wf_leadsto` lemma maps to our `temporal.go` evaluation of `P U Q` with a measure function — if the daemon provides a monotonic measure (e.g., decreasing hop distance), we can prove termination constructively rather than by exhaustive search.
+
+---
+
 ## System Axioms (increasing strength)
 
 | System | Condition on R | Axiom | Use in daemon |
