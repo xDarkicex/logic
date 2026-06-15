@@ -1128,6 +1128,115 @@ This is the deontic equivalent of model checking: `∃ path · contract →* VIO
 
 ---
 
+## Synchronous Data-Flow and Reactive Constraints (Lustre V4 / Lutin, VERIMAG)
+
+Lustre and Lutin implement the synchronous hypothesis — computation is instantaneous relative to the environment. This maps directly to discrete-time LTL semantics.
+
+### 50. The Synchronous Data-Flow Model (Lustre)
+
+Lustre programs are sets of equations over **infinite streams** of values — one value per clock tick. This is mathematically identical to LTL over discrete time traces.
+
+**Core operators:**
+
+| Lustre operator | Meaning | LTL equivalent |
+|-----------------|---------|----------------|
+| `pre(x)` | Previous value of x (initially undefined) | `○⁻¹x` (previous) |
+| `init -> body` | `init` at t=0, `body` at t>0 | `init ∧ ○(body)` |
+| `x = expr` | Equation: x equals expr at every tick | `□(x ↔ expr)` |
+| `assert cond` | Verification condition: cond must hold | `□cond` |
+| `when(clock, body)` | Activate body only when clock is true | Clock-restricted subformula |
+
+**Key mathematical principle:** A Lustre program `P` with inputs `I`, outputs `O`, and state variables `S` defines a Mealy machine:
+```
+(S_t, O_t) = f(S_{t-1}, I_t)     // transition function
+S_0 = init                        // initial state
+```
+The compiler extracts this transition function by solving the system of equations at each clock tick. The solution is a fixed-point: all equations must be simultaneously satisfied given the inputs and previous state.
+
+### 51. Clock Calculus and Dependency Analysis
+
+Lustre's type system infers a **clock** for every expression — a Boolean stream indicating when the expression is active. An expression is only evaluated when its clock is true.
+
+**This is the PINS dependency matrix in language design:**
+- Each variable has a "read clock" (when is it needed?) and a "write clock" (when is it computed?)
+- The clock hierarchy forms a tree: child clocks are refinements of parent clocks
+- At each tick, only the active subset of equations needs to be solved
+
+**For our modal evaluator:** When evaluating `□p` at world `w`, if proposition `p` hasn't changed since the last evaluation (the valuation is "clocked" — same truth value), the result is cached. The clock calculus tells us which subformulas need re-evaluation after each world transition.
+
+### 52. The Compilation Chain: Equations → Automata
+
+Lustre's `ec2oc` compiler extracts the finite-state control structure from data-flow equations:
+
+```
+Lustre source (.lus)
+    → lus2ec (expand arrays, inline nodes, monomorphize)
+    → Expanded code (.ec) — single node, flat equations
+    → ec2oc (extract Boolean state variables, compute transition relation)
+    → Object code (.oc) — finite automaton with:
+        - States = valuations of Boolean state variables
+        - Transitions = equation satisfaction for each input combination
+        - Outputs = computed from state + inputs
+    → ocmin (minimize automaton) or poc (generate C code)
+```
+
+**The extraction algorithm:** Partition variables into Boolean state variables and others. The Boolean state variables form the automaton states. For each state (valuation of Boolean variables), compute the transition relation: which next states are reachable given which input valuations. This is the same procedure as building a Kripke frame from a modal formula's canonical model.
+
+### 53. Lutin's BDD + Polyhedra Solver
+
+Lutin solves constraints over reactive systems using a **combined Boolean/numeric solver**:
+
+```
+is_satisfiable(formula, inputs, state_vars):
+    bdd = formula_to_bdd(formula, inputs, state_vars)    // Boolean abstraction
+    if Bdd.is_false(bdd): return false                    // fast Boolean UNSAT
+    
+    n, m = count_solutions(bdd)                           // check numeric feasibility
+    if (n, m) == (0, 0): return false                     // Boolean SAT but numeric UNSAT
+    return true                                           // actually SAT
+```
+
+**Two-phase check:** Boolean satisfiability via BDD (cheap, exact). If Boolean-SAT, check numeric consistency via polyhedral analysis (more expensive). This avoids exploring numerically infeasible Boolean solutions.
+
+**For our SAT solver:** This is the same pattern as our `fuzzy_smt.go` — separate the Boolean skeleton from numeric constraints. Solve the Boolean part first, then check numeric feasibility on the Boolean model.
+
+### 54. Lutin's Temporal Standard Library
+
+Lutin provides a standard library (`temporal.lut`) implementing common LTL patterns as synchronous stream equations:
+
+```
+OnceNow(cond)         = cond                        // p holds now
+Repeat(body)          = loop body                   // body repeats forever
+Always(cond)          = loop cond                   // □cond
+Until(event, body)    = assert ¬event in body        // body holds until event
+From(event, body)     = loop ¬event fby body         // after event, body holds
+AsLongAs(event, body) = assert event in body         // body holds while event
+OnceWithin(delay,cond)= loop [0,delay] ¬cond fby cond // ◇_{≤delay} cond
+when(cond, body)      = loop { cond→body | ¬cond }  // activate on condition
+```
+
+**Key insight:** These are LTL operators expressed as executable stream equations. Each maps to a finite-state automaton constructor. The `loop` operator is □ (always). The `fby` operator is sequential composition. The `assert` operator is a verification condition.
+
+**For our `temporal.go`:** These patterns are directly implementable as temporal formula constructors. `AsLongAs(event, body)` = `□(event → body)`. `Until(event, body)` = `body W event` (weak until — body holds as long as event hasn't occurred). `From(event, body)` = `event → ○(□body)`.
+
+### 55. Application to the Daemon
+
+The synchronous model maps naturally to daemon memory retrieval:
+
+| Lustre/Lutin concept | Daemon mapping |
+|---------------------|----------------|
+| Clock tick | Retrieval cycle (one evaluation of the recall scoring pipeline) |
+| `pre(x)` | Previous retrieval result (cached score from last cycle) |
+| `assert cond` | Consistency constraint (must hold at every retrieval) |
+| `when(cond, body)` | Conditional retrieval (only evaluate when context matches) |
+| `fby` (followed by) | Sequential pipeline stages (filter → score → rank → select) |
+| `loop` | Recurring evaluation (every retrieval cycle) |
+| Weighted choice `{| w1 |> e1 |}` | Probabilistic recall with confidence weights |
+
+**Timeline as synchronous stream:** The daemon's session timeline IS a Lustre stream. Each time step is a clock tick. The retrieval score is an equation: `score_t = f(pre(score), input_memory, hop_weights)`. Consistency constraints are assertions: `assert ¬(return(M₁) ∧ return(M₂) ∧ contradicts(M₁, M₂))`.
+
+---
+
 ## System Axioms (increasing strength)
 
 | System | Condition on R | Axiom | Use in daemon |
