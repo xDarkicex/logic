@@ -1330,6 +1330,43 @@ The Graph Tsetlin Machine bridges machine learning and propositional logic. For 
 
 ---
 
+## Happens-Before as Kripke Frame (GenMC, MPI-SWS)
+
+GenMC is a stateless model checker for concurrent C/C++/Rust. Its core data structure — the happens-before graph — is mathematically identical to a Kripke frame. Dual MIT/Apache-2.0 license.
+
+### Memory Models = Axiom Systems
+
+GenMC supports multiple memory models. Each defines constraints on the happens-before relation — exactly like modal axiom systems:
+
+| Memory model | Constraint on happens-before | Modal axiom | Our frame condition |
+|-------------|------------------------------|-------------|---------------------|
+| **SC** (Sequential Consistency) | Total order on all events | S5: equivalence relation | `EnforceSystemS5()` |
+| **RC11** (Repaired C11) | Partial order, release-acquire chains | S4: reflexive + transitive | `EnforceSystemS4()` |
+| **IMM** (x86-TSO) | TSO with store buffers | Between K and S4 | Custom frame transformer |
+
+### DPOR = Commutativity-Based Tableau Pruning
+
+GenMC's **Optimal DPOR** (Kokologiannakis et al. 2022, POPL) explores exactly one execution per equivalence class with zero state storage — truly stateless. Two events are independent if they don't conflict (access different variables, or both are reads).
+
+```
+DPOR(execution):
+    for each event e in execution (backward):
+        for each conflicting event c that could happen-before e:
+            if reordering c before e is in a different equivalence class:
+                explore the reordered execution
+```
+
+**For our tableau prover:** Two modal subformulas that don't share atomic propositions commute. DPOR maps directly: the tableau prover only explores one ordering of independent subformula expansions. The "conflict" check is atomic proposition overlap — same as LTSmin's POR (section 27).
+
+### Liveness = ◇, Safety = □
+
+GenMC's liveness checker detects non-terminating spinloops: `□(spin → ¬progress)` is a liveness violation — `◇progress` must hold. Liveness = `◇`, safety = `□`, matching the inductive/coinductive duality from section 31.
+
+### Linearizability = ◇(sequential)
+
+Relinche checks that every concurrent execution is equivalent to SOME sequential execution — `◇(sequential_equivalent)`. The happens-before graph can be extended to a total order consistent with the sequential specification.
+
+---
 
 ## System Axioms (increasing strength)
 
