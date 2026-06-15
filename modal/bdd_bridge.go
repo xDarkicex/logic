@@ -2,18 +2,21 @@ package modal
 
 import (
 	"github.com/xDarkicex/gobdd"
+	"github.com/xDarkicex/logic/fuzzy"
 	"github.com/xDarkicex/memory"
 )
 
 // BDDCtx bridges modal formulas to GOBDD for O(1) Boolean equivalence.
 // All backing slices use Pool — zero heap allocations.
 type BDDCtx struct {
-	bdd      *gobdd.BDD
-	pool     *memory.Pool
-	atomVars []int32     // atomVars[fuzzy.VarID] = bddVar, -1 = unassigned
-	skelSeen []skelEntry // persistent modal-subformula → var cache
-	nextVar  int32       // next available BDD variable
-	capacity int32       // current BDD var count
+	bdd        *gobdd.BDD
+	pool       *memory.Pool
+	atomVars   []int32     // atomVars[fuzzy.VarID] = bddVar, -1 = unassigned
+	skelSeen   []skelEntry // persistent modal-subformula → var cache
+	isopCache  []Formula   // ISOP memo table (indexed by NodeID)
+	isopCached []bool      // true if isopCache[node] is valid
+	nextVar    int32       // next available BDD variable
+	capacity   int32       // current BDD var count
 }
 
 type skelEntry struct {
@@ -205,3 +208,112 @@ func (ctx *BDDCtx) VarCount() int32 { return ctx.nextVar }
 // BDDEquiv returns true if two BDD nodes represent the same function.
 // O(1) — BDDs are canonical. CC=2.
 func BDDEquiv(a, b gobdd.NodeID) bool { return a == b }
+
+
+// --- ISOP: Minato's Irredundant Sum-of-Products ---
+//
+// Converts a BDD to a minimized DNF formula. Uses recursive decomposition
+// with Pool-backed memoization to avoid exponential blowup.
+// Output Atoms use VarID = BDD variable index.
+//
+// Reference: S. Minato, "Fast Generation of Irredundant Sum-of-Products
+// Forms from Binary Decision Diagrams," 1992.
+
+// ISOP returns an irredundant sum-of-products for the BDD node.
+// CC=5.
+func (ctx *BDDCtx) ISOP(node gobdd.NodeID) Formula {
+	ctx.ensureISOPCache(int(node) + 1)
+	if ctx.isopCached[node] {
+		return ctx.isopCache[node]
+	}
+	result := ctx.isopRec(node)
+	ctx.isopCache[node] = result
+	ctx.isopCached[node] = true
+	return result
+}
+
+// isopRec is the recursive Minato ISOP worker. CC=8.
+func (ctx *BDDCtx) isopRec(f gobdd.NodeID) Formula {
+	if f == gobdd.False {
+		return nil
+	}
+	if f == gobdd.True {
+		return trueFormula
+	}
+	ctx.ensureISOPCache(int(f) + 1)
+	if ctx.isopCached[f] {
+		return ctx.isopCache[f]
+	}
+
+	x := ctx.bdd.VarOf(f)
+	f0 := ctx.bdd.Restrict(f, x, false)
+	f1 := ctx.bdd.Restrict(f, x, true)
+
+	// g0 = ISOP(f0 \\ f1): cubes unique to cofactor x=0.
+	diff0 := ctx.bdd.Diff(f0, f1)
+	g0 := ctx.ISOP(diff0)
+
+	// g1 = ISOP(f1 \\ f0): cubes unique to cofactor x=1.
+	diff1 := ctx.bdd.Diff(f1, f0)
+	g1 := ctx.ISOP(diff1)
+
+	// h = ISOP(shared \\cap not(union)) where shared=f0\\cap f1, union is BDD of g0\\cup g1.
+	// The unique cubes (g0, g1) are removed from shared before recursion.
+	shared := ctx.bdd.And(f0, f1)
+	union := ctx.bdd.Or(diff0, diff1)
+	h := ctx.ISOP(ctx.bdd.And(shared, ctx.bdd.Not(union)))
+
+	v := Atom{ID: fuzzy.VarID(x)}
+	result := h
+	if g0 != nil {
+		result = orISOP(result, isopCube(Not{Formula: v}, g0))
+	}
+	if g1 != nil {
+		result = orISOP(result, isopCube(v, g1))
+	}
+	ctx.isopCache[f] = result
+	ctx.isopCached[f] = true
+	return result
+}
+
+// ensureISOPCache grows the memo table to at least the given size. CC=2.
+func (ctx *BDDCtx) ensureISOPCache(size int) {
+	if size <= len(ctx.isopCache) {
+		return
+	}
+	n := size * 2
+	newF := memory.MustPoolSlice[Formula](ctx.pool, n)
+	newF = newF[:n]
+	copy(newF, ctx.isopCache)
+	newB := memory.MustPoolSlice[bool](ctx.pool, n)
+	newB = newB[:n]
+	copy(newB, ctx.isopCached)
+	ctx.isopCache = newF
+	ctx.isopCached = newB
+}
+
+// isopCube builds a cube: (literal ∧ g), collapsing (literal ∧ True) → literal. CC=2.
+func isopCube(lit, g Formula) Formula {
+	if g == trueFormula {
+		return lit
+	}
+	return And{Left: lit, Right: g}
+}
+
+// orISOP builds Or{left, right}, stripping nil (False). CC=2.
+func orISOP(left, right Formula) Formula {
+	if left == nil {
+		return right
+	}
+	if right == nil {
+		return left
+	}
+	return Or{Left: left, Right: right}
+}
+
+// trueFormula is the singleton sentinel for logical True in ISOP output.
+var trueFormula = &trueSentinel{}
+
+type trueSentinel struct{}
+
+func (*trueSentinel) Evaluate(World, *Model) (TruthValue, error) { return 1.0, nil }

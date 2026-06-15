@@ -240,3 +240,94 @@ func TestBDDBridgeCC(t *testing.T) {
 	ctx.IsTautology(Implies{Antecedent: p, Consequent: p})
 	ctx.IsContradiction(And{Left: p, Right: Not{Formula: p}})
 }
+
+func TestISOPFalse(t *testing.T) {
+	ctx := newBDDCtx(t, 4)
+	r := ctx.ISOP(gobdd.False)
+	if r != nil {
+		t.Error("ISOP(False) should be nil")
+	}
+}
+
+func TestISOPTrue(t *testing.T) {
+	ctx := newBDDCtx(t, 4)
+	r := ctx.ISOP(gobdd.True)
+	if r == nil {
+		t.Error("ISOP(True) should not be nil")
+	}
+}
+
+func TestISOPSingleVar(t *testing.T) {
+	ctx := newBDDCtx(t, 4)
+	p := Atom{ID: 0}
+	node := ctx.ToBDD(p)
+	r := ctx.ISOP(node)
+	if r == nil {
+		t.Error("ISOP(Var(0)) should not be nil")
+	}
+}
+
+func TestISOPAnd(t *testing.T) {
+	ctx := newBDDCtx(t, 4)
+	p := Atom{ID: 0}
+	q := Atom{ID: 1}
+	node := ctx.ToBDD(And{Left: p, Right: q})
+	r := ctx.ISOP(node)
+	if r == nil {
+		t.Error("ISOP(p and q) should not be nil")
+	}
+	m := &Model{valuation: []TruthValueSlice{TruthValueSlice{1.0, 1.0}}}
+	v, _ := r.Evaluate(0, m)
+	if v != 1.0 {
+		t.Errorf("ISOP(p and q) at p=1,q=1: got %v, want 1.0", v)
+	}
+}
+
+func TestISOPOr(t *testing.T) {
+	ctx := newBDDCtx(t, 4)
+	p := Atom{ID: 0}
+	q := Atom{ID: 1}
+	node := ctx.ToBDD(Or{Left: p, Right: q})
+	r := ctx.ISOP(node)
+	if r == nil {
+		t.Error("ISOP(p or q) should not be nil")
+	}
+}
+
+func TestISOPCache(t *testing.T) {
+	ctx := newBDDCtx(t, 4)
+	p := Atom{ID: 0}
+	q := Atom{ID: 1}
+	node := ctx.ToBDD(And{Left: p, Right: q})
+	ctx.ISOP(node)
+	before := ctx.NodeCount()
+	ctx.ISOP(node)
+	after := ctx.NodeCount()
+	if after != before {
+		t.Errorf("ISOP cache miss: nodes %d -> %d", before, after)
+	}
+}
+
+func TestISOPComplex(t *testing.T) {
+	ctx := newBDDCtx(t, 8)
+	p := Atom{ID: 0}
+	q := Atom{ID: 1}
+	r := Atom{ID: 2}
+	f := Or{Left: And{Left: p, Right: q}, Right: And{Left: p, Right: r}}
+	node := ctx.ToBDD(f)
+	isop := ctx.ISOP(node)
+	if isop == nil {
+		t.Error("ISOP of complex formula should not be nil")
+	}
+	for i := 0; i < 8; i++ {
+		pv := TruthValue((i >> 0) & 1)
+		qv := TruthValue((i >> 1) & 1)
+		rv := TruthValue((i >> 2) & 1)
+		m := &Model{valuation: []TruthValueSlice{TruthValueSlice{pv, qv, rv}}}
+		orig, _ := f.Evaluate(0, m)
+		result, _ := isop.Evaluate(0, m)
+		if orig != result {
+			t.Errorf("assignment %d: original=%v isop=%v", i, orig, result)
+		}
+	}
+}
