@@ -167,3 +167,53 @@ func TestSplitThree(t *testing.T) {
 		t.Errorf("2 independent groups, got %d", len(fx.rw.SplitConjunction(conj)))
 	}
 }
+
+func TestSimplifyPropsAtom(t *testing.T) {
+	fx := newRewriteFixtures(t)
+	_, ev, un := fx.rw.simplifyProps(fx.a(1))
+	if ev || un {
+		t.Errorf("atom: ev=%v un=%v, want false,false", ev, un)
+	}
+}
+
+func TestSimplifyPropsDiamond(t *testing.T) {
+	fx := newRewriteFixtures(t)
+	_, ev, un := fx.rw.simplifyProps(fx.dia(fx.a(1)))
+	if !ev || un {
+		t.Errorf("◇atom: ev=%v un=%v, want true,false", ev, un)
+	}
+}
+
+func TestSimplifyPropsBox(t *testing.T) {
+	fx := newRewriteFixtures(t)
+	_, ev, un := fx.rw.simplifyProps(fx.bx(fx.a(1)))
+	if ev || !un {
+		t.Errorf("□atom: ev=%v un=%v, want false,true", ev, un)
+	}
+}
+
+func TestSimplifyPropsAnd(t *testing.T) {
+	fx := newRewriteFixtures(t)
+	// ◇a ∧ □b: left ev=true un=false, right ev=false un=true
+	// AND: ev = lev||rev = true, un = lun&&run = false&&true = false
+	_, ev, un := fx.rw.simplifyProps(fx.and(fx.dia(fx.a(1)), fx.bx(fx.a(2))))
+	if !ev {
+		t.Error("◇a∧□b: should be eventual")
+	}
+	if un {
+		t.Error("◇a∧□b: should NOT be universal (◇a inherits atom's un=false)")
+	}
+}
+
+func TestSimplifyPropsOr(t *testing.T) {
+	fx := newRewriteFixtures(t)
+	// ◇a ∨ □b: left ev=true un=false, right ev=false un=true
+	// OR: ev = lev&&rev = true&&false = false, un = lun||run = false||true = true
+	_, ev, un := fx.rw.simplifyProps(fx.or(fx.dia(fx.a(1)), fx.bx(fx.a(2))))
+	if ev {
+		t.Error("◇a∨□b: should NOT be eventual (□b is not)")
+	}
+	if !un {
+		t.Error("◇a∨□b: should be universal (right is)")
+	}
+}
