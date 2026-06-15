@@ -7,20 +7,21 @@ import (
 )
 
 // Registry provides formula hash consing — structurally identical formulas
-// share the same pointer. This gives O(1) equality via pointer comparison
-// and eliminates redundant formula objects.
+// share the same pointer. Each entry gets a sequential ID for PINS dependency tracking.
 //
 // Backed by a Pool-allocated open-addressing hash table. No Go maps.
 type Registry struct {
 	buckets []regEntry // Pool-backed, power-of-2 sized
 	mask    uint32
 	count   int
+	nextID  int // sequential formula ID for PINS
 	pool    *memory.Pool
 }
 
 type regEntry struct {
 	f    Formula
 	hash uint64
+	id   int
 	used bool
 }
 
@@ -66,7 +67,9 @@ func (r *Registry) Intern(f Formula) Formula {
 			}
 			e.f = f
 			e.hash = h
+			e.id = r.nextID
 			e.used = true
+			r.nextID++
 			r.count++
 			return f
 		}
@@ -98,6 +101,26 @@ func (r *Registry) grow() {
 	r.buckets = newBuckets
 	r.mask = newMask
 }
+
+// GetID returns the PINS sequential ID for a canonical formula, or -1 if not found.
+// CC=3.
+func (r *Registry) GetID(f Formula) int {
+	h := r.hashOf(f)
+	idx := uint32(h) & r.mask
+	for {
+		e := &r.buckets[idx]
+		if !e.used {
+			return -1
+		}
+		if e.hash == h && formulaEqual(e.f, f) {
+			return e.id
+		}
+		idx = (idx + 1) & r.mask
+	}
+}
+
+// NextID returns the next formula ID that will be assigned.
+func (r *Registry) NextID() int { return r.nextID }
 
 // hashOf computes a structural hash for a formula. CC=5.
 func (r *Registry) hashOf(f Formula) uint64 {
