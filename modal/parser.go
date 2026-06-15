@@ -162,14 +162,19 @@ func isIdentPart(ch byte) bool {
 }
 
 // Parser is a Pratt parser for modal logic formulas.
-// Uses an explicit Pool-backed token slice with a position cursor — no recursion needed
-// for the expression parsing core. Operator precedence is handled via binding power.
+// Uses an explicit Pool-backed token slice with a position cursor.
+// When a Registry is set, parsed formulas are hash-consed for O(1) equality.
 type Parser struct {
 	tokens []Token
 	pos    int
 	src    string
 	sym    *symbolTable
+	reg    *Registry // optional hash cons registry
 }
+
+// SetRegistry attaches a formula hash cons registry. When set, all parsed
+// formulas are canonicalized through the registry before being returned.
+func (p *Parser) SetRegistry(reg *Registry) { p.reg = reg }
 
 // symbolTable maps atom names to formula IDs during parsing.
 type symbolTable struct {
@@ -204,7 +209,6 @@ func NewParser(tokens []Token, src string) *Parser {
 }
 
 // Parse parses the token stream into a Formula.
-// Uses Pratt parsing with explicit precedence — no deep recursion.
 // CC=7.
 func (p *Parser) Parse() (Formula, error) {
 	f, err := p.parseExpr(0)
@@ -214,7 +218,15 @@ func (p *Parser) Parse() (Formula, error) {
 	if p.peek().Type != TokEOF {
 		return nil, fmt.Errorf("unexpected token after expression")
 	}
-	return f, nil
+	return p.canon(f), nil
+}
+
+// canon returns the canonical form of f via the registry, or f if no registry is set.
+func (p *Parser) canon(f Formula) Formula {
+	if p.reg != nil {
+		return p.reg.Intern(f)
+	}
+	return f
 }
 
 // parseExpr is the Pratt parsing core. minBP is the minimum binding power
@@ -247,36 +259,35 @@ func (p *Parser) parsePrefix(tok Token) (Formula, error) {
 	switch tok.Type {
 	case TokAtom:
 		name := p.src[tok.Start:tok.End]
-		id := p.sym.intern(name)
-		return Atom{ID: id}, nil
+		return p.canon(Atom{ID: p.sym.intern(name)}), nil
 
 	case TokNot:
 		operand, err := p.parseExpr(60)
 		if err != nil {
 			return nil, err
 		}
-		return Not{Formula: operand}, nil
+		return p.canon(Not{Formula: operand}), nil
 
 	case TokBox:
 		operand, err := p.parseExpr(70)
 		if err != nil {
 			return nil, err
 		}
-		return Box{Formula: operand, Rel: RelCausal}, nil
+		return p.canon(Box{Formula: operand, Rel: RelCausal}), nil
 
 	case TokDiamond:
 		operand, err := p.parseExpr(70)
 		if err != nil {
 			return nil, err
 		}
-		return Diamond{Formula: operand, Rel: RelCausal}, nil
+		return p.canon(Diamond{Formula: operand, Rel: RelCausal}), nil
 
 	case TokNext:
 		operand, err := p.parseExpr(70)
 		if err != nil {
 			return nil, err
 		}
-		return Next{Formula: operand}, nil
+		return p.canon(Next{Formula: operand}), nil
 
 	case TokLParen:
 		inner, err := p.parseExpr(0)
@@ -286,7 +297,7 @@ func (p *Parser) parsePrefix(tok Token) (Formula, error) {
 		if p.peek().Type != TokRParen {
 			return nil, fmt.Errorf("expected ')'")
 		}
-		p.next() // consume )
+		p.next()
 		return inner, nil
 
 	default:
@@ -302,35 +313,35 @@ func (p *Parser) parseInfix(tok Token, left Formula, bp int) (Formula, error) {
 		if err != nil {
 			return nil, err
 		}
-		return And{Left: left, Right: right}, nil
+		return p.canon(And{Left: left, Right: right}), nil
 
 	case TokOr:
 		right, err := p.parseExpr(bp)
 		if err != nil {
 			return nil, err
 		}
-		return Or{Left: left, Right: right}, nil
+		return p.canon(Or{Left: left, Right: right}), nil
 
 	case TokImplies:
-		right, err := p.parseExpr(bp - 1) // right-associative
+		right, err := p.parseExpr(bp - 1)
 		if err != nil {
 			return nil, err
 		}
-		return Implies{Antecedent: left, Consequent: right}, nil
+		return p.canon(Implies{Antecedent: left, Consequent: right}), nil
 
 	case TokIff:
 		right, err := p.parseExpr(bp)
 		if err != nil {
 			return nil, err
 		}
-		return Iff{Left: left, Right: right}, nil
+		return p.canon(Iff{Left: left, Right: right}), nil
 
 	case TokUntil:
 		right, err := p.parseExpr(bp)
 		if err != nil {
 			return nil, err
 		}
-		return Until{Left: left, Right: right}, nil
+		return p.canon(Until{Left: left, Right: right}), nil
 
 	default:
 		return nil, fmt.Errorf("unexpected infix token: %v", tok.Type)
