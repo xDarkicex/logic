@@ -424,7 +424,138 @@ Each component is checked independently — if any is unsatisfiable, the whole c
 
 ---
 
-## SAT Solver Improvements from Spot
+## SAT Solver Architecture (Kissat — MIT-licensed, world-class reference)
+
+Kissat is Armin Biere's "keep it simple and clean bare metal SAT solver." It consistently places in the top 3 at the SAT Competition (2020-2024). Licensed MIT — we can use algorithms 1:1 and adapt data structures to our off-heap allocators.
+
+### Architecture Overview (32,554 lines C)
+
+```
+kissat/src/
+├── analyze.c     Conflict analysis (1st UIP learning, clause minimization)
+├── backtrack.c   Non-chronological backtracking
+├── bump.c        VSIDS variable activity bumping (EMA decay)
+├── clause.c      Clause database (watched literals, glue-based deletion)
+├── collect.c     Garbage collection (marksweep over clause database)
+├── compact.c     Inprocessing (variable elimination, subsumption, self-subsuming)
+├── decide.c      Decision heuristics (VSIDS + CHB + stable mode switching)
+├── deduce.c      Unit propagation (watched literals, fast forward checking)
+├── eliminate.c   Bounded variable elimination (BVE)
+├── equate.c      Equivalent literal substitution
+├── probe.c       Failed literal probing
+├── subsume.c     Forward/backward subsumption
+├── vivify.c      Clause vivification (redundancy elimination)
+├── walk.c        Local search (WalkSAT-style, for initial phase)
+└── weaken.c      Clause weakening
+```
+
+### Key Algorithms (transferable to Go + xDarkicex/memory)
+
+#### 1. Watched Literals (deduce.c) — O(1) unit propagation
+
+Two watched literals per clause. On assignment, only check clauses where an assigned literal is watched. If the other watched literal is true, clause is satisfied. If both watched literals are false, clause is conflicting. Otherwise, find a new unassigned literal to watch. This is the single most important optimization in CDCL — reduces propagation from O(n·m) to O(m).
+
+**Go mapping:** Clause = `struct { lits []int32; watched [2]int32; glue int32 }` from Pool. Watch lists = Pool-backed `[][]clauseRef` keyed by literal index.
+
+#### 2. 1st UIP Conflict Analysis (analyze.c) — learned clause generation
+
+When a conflict occurs at decision level d, the implication graph is traversed backward from the conflict. The 1st Unique Implication Point (UIP) is the dominator on the path from the conflict to the decision literal. The learned clause contains the negation of all literals assigned at the current level between the UIP and the conflict, plus the reasons for earlier-level assignments.
+
+The UIP heuristic produces shorter, more reusable learned clauses than the original decision-based analysis.
+
+**Go mapping:** `implicationGraph []struct{ reason clauseRef; level int32 }` from Arena. Resolution steps walk the graph linearly — no recursion, CC ≤ 6.
+
+#### 3. VSIDS with EMA Decay (bump.c) — variable activity scoring
+
+Variables that appear in learned clauses get their activity "bumped" (incremented). An Exponential Moving Average (EMA) decay factor periodically reduces all scores. The variable with the highest score is chosen as the next decision. Kissat uses a priority queue (binary heap) for O(log n) max extraction.
+
+Key constants: decay factor 0.95, rescale when scores exceed 1e100.
+
+**Go mapping:** `scores []float64` from Pool. Binary heap = Pool-backed `[]int32` with sift-up/sift-down. CC ≤ 5 per heap operation.
+
+#### 4. Clause Database Reduction (clause.c, collect.c) — glue-based GC
+
+Each learned clause has a "glue" score (number of distinct decision levels in the clause). Low glue = more reusable. During GC:
+- Clauses with high glue are marked for deletion
+- Clauses that are satisfied at the top level are garbage
+- Clauses that are reasons for current assignments are protected
+- The clause database is compacted (moving survivors to fill holes)
+
+**Go mapping:** Clause slots from Pool. GC pass = O(n) scan with mark-and-compact. Arena-allocated implication graph tracks reasons.
+
+#### 5. Inprocessing (compact.c, eliminate.c, probe.c, subsume.c)
+
+Kissat interleaves search with inprocessing — formula simplification that runs between restarts:
+- **BVE**: If a variable appears in ≤ threshold clauses, eliminate it by resolution
+- **Subsumption**: If clause A's literals are a subset of clause B's, B is redundant
+- **Self-subsuming**: If clause A with literal x subsumes B with ¬x, B can be strengthened
+- **Failed literal probing**: Assign each literal, propagate; if conflict, learn unit clause
+- **Vivification**: For each clause, check if any literal is redundant by asserting its negation and propagating
+
+**Go mapping:** Resolution = `bdd.And(bdd.Not(lit_bdd), clause_bdd)` for BVE. Subsumption = `bdd.Implies(clauseA_bdd, clauseB_bdd)` via BDD bridge. Failed literal probing uses unit propagation from deduce.
+
+#### 6. Stable Mode Switching (decide.c) — VSIDS vs. focused search
+
+Kissat alternates between two decision strategies:
+- **Focused mode**: VSIDS with rapid decay (aggressive, exploits current assignment)
+- **Stable mode**: VSIDS with slow decay + random walks (explores new regions)
+
+Switching happens when no progress is made after N conflicts in the current mode. This balances exploitation vs. exploration without explicit restarts.
+
+**Go mapping:** `mode enum { Focused, Stable }`. Mode switch threshold tracked in solver state. CC = 2.
+
+#### 7. Local Search Initialization (walk.c) — WalkSAT pre-solving
+
+Before CDCL, a lightweight WalkSAT-style local search runs for a fixed budget. It flips variables to minimize unsatisfied clauses with random walk escape. Often solves easy instances in milliseconds without touching the CDCL machinery.
+
+**Go mapping:** `walkState struct { assignment []int8; unsat []int32 }` from Pool. Flip heuristic: pick clause, pick variable with best make/break score. CC = 5.
+
+### Data Structure Design for Go + xDarkicex/memory
+
+```
+Solver
+├── clauses     []clauseRef     // Pool-backed clause database
+├── watchLists  [][]clauseRef   // Pool-backed, per-literal watch lists
+├── assignment  []int8          // Pool-backed: -1=unassigned, 0=false, 1=true
+├── level       []int32         // Pool-backed: decision level per variable
+├── reason      []clauseRef     // Pool-backed: antecedent clause per assignment
+├── scores      []float64       // Pool-backed: VSIDS activity per variable
+├── heap        []int32         // Pool-backed: binary heap for max score
+├── trail       []int32         // Pool-backed: assignment trail for backtracking
+├── glue        []int32         // Pool-backed: glue value per clause
+└── mode        enum            // Focused vs Stable
+```
+
+Every allocation through `memory.Pool`. The clause database is a flat `[]clause` with free-list for allocation slots (ShardedFreeList for concurrent variants). Watch lists are indexed by 2×numVars (positive + negative literal per variable).
+
+### Integration with Existing Modal Pipeline
+
+The SAT solver slots into the cascade as an alternative to tableau proving:
+
+```
+Cascade.Prove(f):
+    Tier 1: Syntactic check (existing)
+    Tier 2: BDD-based Boolean skeleton check (existing)
+    Tier 3a: Kissat CDCL SAT solver ← NEW
+    Tier 3b: Couvreur tableau prover (existing fallback)
+```
+
+For Boolean formulas, Tier 3a is O(2^n) worst case but O(n) in practice (watched literals). For modal formulas, the BDD skeleton (§18) converts modal subformulas to fresh variables, then SAT solves the Boolean skeleton.
+
+### Implementation Priority (R5)
+
+| Phase | Component | Effort | Impact |
+|-------|-----------|--------|--------|
+| SAT.1 | Watched literals + unit propagation | 4h | Foundation |
+| SAT.2 | VSIDS + decision heap | 2h | Heuristic quality |
+| SAT.3 | 1st UIP + clause learning | 3h | Completeness |
+| SAT.4 | Clause DB + glue-based GC | 2h | Memory control |
+| SAT.5 | Restarts + mode switching | 1h | Search diversity |
+| SAT.6 | Inprocessing (BVE, subsumption) | 4h | Formula reduction |
+| SAT.7 | Failed literal probing | 2h | Unit discovery |
+| SAT.8 | WalkSAT initialization | 2h | Easy-instance speed |
+
+## SAT Solver Improvements from Spot (R4 — COMPLETED)
 
 While our CDCL solver already exceeds PicoSAT, Spot teaches several complementary techniques:
 
