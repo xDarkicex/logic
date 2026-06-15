@@ -1393,6 +1393,64 @@ Hard scan deadlines: `□◇(complete_within(deadline))`. Missed deadline = over
 
 ---
 
+## Pluggable SAT/SMT Backend Architecture (ESBMC)
+
+ESBMC is an industrial bounded model checker for C/C++ with 10+ pluggable SMT backends. Apache-2.0 licensed. Its solver abstraction layer is the pattern for our SAT integration.
+
+### Pluggable Solver Interface
+
+ESBMC abstracts every SMT solver behind a single `smt_convt` interface. Each backend (Bitwuzla, Z3, Boolector, CVC4/5, MathSAT, Yices, MiniSat) is a subclass. The factory `create_solver(name)` picks the right backend at runtime.
+
+**For our SAT solver:** Our `sat/interfaces.go` already defines `Solver`. ESBMC's pattern shows how to take this further — make every solver (CDCL, DPLL, future BDD) implement the same interface, with a factory that selects by name.
+
+### Three Optional Capability Interfaces
+
+ESBMC uses three capability interfaces that backends opt into. If a backend doesn't implement one, a generic fallback handles it:
+
+| Interface | If backend supports | Fallback if not |
+|-----------|---------------------|-----------------|
+| `array_iface` | Solver's native arrays | `array_conv` (Kroening's decision procedure) |
+| `tuple_iface` | Solver's native tuples/datatypes | `smt_tuple_node` or `smt_tuple_sym` |
+| `fp_convt` | Solver's native floating point | IEEE 754 bit-vector encoding |
+
+**For modal logic:** The accessibility relation IS an array theory — `R[w][v]` maps to array indexing. A solver that natively supports arrays gets `array_iface`. One that doesn't gets `array_conv` as fallback. Same pattern: our `Frame.Relations` can be backed by a direct Pool slice (native) or a hash-map fallback (generic).
+
+### IEEE 754 Float to Real-Arithmetic Encoding
+
+ESBMC's `--ir-ieee` mode encodes floating-point operations as real-arithmetic constraints with sound symmetric error bounds:
+
+```
+|fl(r) - r| <= eps_rel * |r| + eps_abs
+where eps_rel = 2⁻⁵³ (double) or 2⁻²⁴ (single)
+      eps_abs = minimum positive subnormal
+```
+
+The enclosure asserts `r - ε <= result <= r + ε` using bidirectional inequalities so the bounds survive Z3's `solve-eqs` tactic.
+
+**For Phase 6 fuzzy-modal bridge:** Truth values are `float64` in `[0,1]`. The error enclosure pattern gives sound bounds on fuzzy evaluation: when `◇P = max_{v∈R(w)} P(v)` is computed across many worlds, floating-point error accumulates. The enclosure guarantees the result is within `[true_value - ε, true_value + ε]`.
+
+### Memory Model Flattening
+
+ESBMC flattens the C memory model (pointers, arrays, unions, byte operations) into SMT terms BEFORE handing to the solver. The solver never sees pointers — only bit-vector and array operations.
+
+**For modal logic:** The valuation function `V: VarID × World → TruthValue` should be flattened into a 1D Pool-backed `[]TruthValue` indexed by `(world * numVars + var)`. The tableau prover never sees "worlds" — only indices into the valuation vector. This is pre-allocation at frame construction time (same as OpenPLC image tables) — zero allocation during evaluation.
+
+### Query Lifecycle
+
+Every verification query follows the same lifecycle:
+```
+assert_expr(formula)           // convert to SMT, push to solver
+    └─> convert_ast(expr2tc)   // walk expression tree, build SMT terms
+    └─> assert_ast(smt_term)   // hand term to solver
+... repeat for all assertions ...
+dec_solve()                    // invoke solver, return SAT/UNSAT/UNKNOWN
+if SAT: get_model()            // extract counterexample
+```
+
+**For our tableau prover:** Same lifecycle — `assert_branch(formula)`, `expand_rules()`, `check_contradiction()` → closed/open, `extract_model()`. The push/pop (`push_ctx`/`pop_ctx`) maps to tableau branch backtracking.
+
+---
+
 ## System Axioms (increasing strength)
 
 | System | Condition on R | Axiom | Use in daemon |
