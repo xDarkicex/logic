@@ -288,3 +288,9 @@ func (m *Model) Frame() *Frame { return m.frame }
 
 // NumVars returns the number of atomic proposition variables.
 func (m *Model) NumVars() int { return m.numVars }
+
+// Valuation returns the model's valuation matrix (indexed by world, then by variable).
+// Returns the internal slice directly for read-only access. Callers must not mutate.
+func (m *Model) Valuation() []TruthValueSlice {
+	return m.valuation
+}
