@@ -39,6 +39,12 @@ type MembershipFunc func(x float64) TruthValue
 // VarID is a fixed-size handle for variables.
 type VarID uint32
 
+const (
+	VarSemanticSimilarity VarID = iota + 1
+	VarTemporalAuthority
+	VarKeywordCoverage
+)
+
 type nameEntry struct {
 	data []byte // Off-heap
 	len  uint32

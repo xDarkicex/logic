@@ -109,6 +109,39 @@ type arbiterResult struct {
 	err   error
 }
 
+// HighestReliabilityStrategy returns the registered strategy with the highest
+// current reliability score. This is useful for evaluating a single strategy
+// synchronously per item in a loop without goroutine overhead.
+func (a *Arbiter) HighestReliabilityStrategy() (Strategy, string, error) {
+	a.mu.RLock()
+	strats := a.strategies
+	a.mu.RUnlock()
+
+	if len(strats) == 0 {
+		return nil, "", fmt.Errorf("no strategies registered")
+	}
+
+	var best Strategy
+	var bestName string
+	var maxScore float64 = -1.0
+	found := false
+
+	for _, rec := range strats {
+		score := math.Float64frombits(atomic.LoadUint64(&rec.reliability))
+		if !found || score > maxScore {
+			maxScore = score
+			best = rec.strategy
+			bestName = rec.name
+			found = true
+		}
+	}
+
+	if !found {
+		return nil, "", fmt.Errorf("no strategies available")
+	}
+	return best, bestName, nil
+}
+
 // Select runs all strategies concurrently and returns the best valid result.
 // Split into dispatchEngines and collectResults to keep CC <= 10.
 func (a *Arbiter) Select(inputs map[VarID]float64, pool *memory.Pool) (float64, string, error) {
