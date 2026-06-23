@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git clone *)",
+      "Bash(cp -r /tmp/causalgo /tmp/dowhy /tmp/deep_causality /tmp/CIfly /Users/z3robit/Development/golang/src/github.com/xDarkicex/logic/.tmp-refs/)",
+      "Bash(cp -r /tmp/causal-learn /tmp/CausalFS /Users/z3robit/Development/golang/src/github.com/xDarkicex/logic/.tmp-refs/)",
+      "Bash(mkdir -p /Users/z3robit/Development/golang/src/github.com/xDarkicex/logic/.tmp-refs)",
+      "Bash(cp -r /tmp/causalgo /tmp/dowhy /tmp/deep_causality /tmp/CIfly /tmp/causal-learn /tmp/CausalFS /Users/z3robit/Development/golang/src/github.com/xDarkicex/logic/.tmp-refs/)",
+      "Bash(mkdir -p .tmp-refs)",
+      "Bash(cp -r /tmp/causalgo .tmp-refs/)",
+      "Bash(cp -r /tmp/dowhy .tmp-refs/)",
+      "Bash(cp -r /tmp/deep_causality .tmp-refs/)",
+      "Bash(cp -r /tmp/CIfly .tmp-refs/)"
+    ]
+  }
+}
