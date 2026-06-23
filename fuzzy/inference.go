@@ -485,3 +485,31 @@ func (e *TSKEngine) Evaluate(inputs map[VarID]float64) (float64, error) {
 	}
 	return num / den, nil
 }
+
+// RuleFiringStrengths computes the normalized firing strength for each rule.
+// It populates the provided 'out' slice (to avoid heap allocations) and returns it.
+func (e *TSKEngine) RuleFiringStrengths(inputs map[VarID]float64, out []float64) ([]float64, error) {
+	n := len(e.rules)
+	if cap(out) < n {
+		// Fallback if caller provides a slice that is too small
+		out = make([]float64, n)
+	}
+	out = out[:n]
+
+	var total float64
+	for i, rule := range e.rules {
+		strength, err := evaluateTSKAntecedents(rule, inputs, e.variables, e.tnorm, e.tconorm)
+		if err != nil {
+			return out, err
+		}
+		out[i] = float64(strength)
+		total += out[i]
+	}
+
+	if total > 0 {
+		for i := range out {
+			out[i] /= total
+		}
+	}
+	return out, nil
+}
