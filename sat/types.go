@@ -34,11 +34,21 @@ func initAllocators() {
 		if err != nil {
 			panic(fmt.Errorf("failed to create lit pool: %v", err))
 		}
-		satPool, err = memory.NewPool(memory.DefaultConfig())
+		satCfg := memory.DefaultConfig()
+		satCfg.PoolSize = 256 * 1024 * 1024
+		satPool, err = memory.NewPool(satCfg)
 		if err != nil {
 			panic(fmt.Errorf("failed to create sat pool: %v", err))
 		}
 	})
+}
+
+// ResetPool releases all SAT pool memory. Safe to call between compaction
+// cycles after all SAT solver results have been consumed.
+func ResetPool() {
+	if satPool != nil {
+		satPool.Reset()
+	}
 }
 
 // Literal represents a boolean variable or its negation
